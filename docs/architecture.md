@@ -1,4 +1,4 @@
-# Architecture
+# Tuck Architecture
 
 ## Status
 
@@ -921,7 +921,6 @@ Prioritise safe edits/completions, recurrence, better resolution, offline behavi
 - Whether production MCP OAuth is implemented in-process or through a small vetted authorization component.
 - Whether Gemini supplies a stable request identifier; the feasibility spike must measure retry behaviour rather than assume it.
 - Whether the share target receives the user's transcript, Gemini's response, or both.
-- Product and repository name before code scaffolding.
 
 ## Sources
 

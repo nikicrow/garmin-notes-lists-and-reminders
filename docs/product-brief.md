@@ -1,8 +1,8 @@
-# Product Brief
+# Tuck Product Brief
 
-## Working title
+## Product name
 
-Notes, Lists and Reminders
+Tuck
 
 ## Status
 
@@ -448,4 +448,3 @@ Use actual capture and review data to prioritise:
 - Should a named **Shopping** list be shared by default while other lists remain private?
 - How long should raw captures and agent execution payloads be retained?
 - Which LLM provider/model should the LangGraph workflow use initially, and what cost/privacy constraints should govern that choice?
-- What should the product and repository be named?
