@@ -4,11 +4,9 @@
 
 Notes, Lists and Reminders
 
-> The repository still has its original Garmin-oriented name. Renaming it is a separate decision and is not required before implementation.
-
 ## Status
 
-Discovery / pre-MVP — revised for Gemini voice capture and a Python LangGraph command agent.
+Discovery / pre-MVP.
 
 ## Product purpose
 
@@ -18,9 +16,7 @@ The primary value is reducing the effort between remembering something and captu
 
 > Capture something before it disappears, in natural language, and let the app work out where it belongs.
 
-## Revised product direction
-
-The active plan no longer depends on a Garmin Connect IQ application.
+## Product direction
 
 - The PWA remains the source of truth and the management surface.
 - Gemini on Android supplies the voice interaction and transcript.
@@ -28,8 +24,6 @@ The active plan no longer depends on a Garmin Connect IQ application.
 - A Python LangGraph workflow owns domain interpretation: what operation is requested, whether it is a note, list change, or reminder, and which validated fields are required.
 - Deterministic application services—not the language model—perform authorised database writes.
 - Ambiguous or unsafe requests are retained as captures for review rather than guessed.
-
-Garmin integration is deferred from the active roadmap. It can be reconsidered later as another capture adapter, but no PWA, domain, or agent component should depend on it.
 
 ## Problem
 
@@ -178,11 +172,11 @@ A single utterance may produce several actions, but they execute as one explicit
 
 ### Note
 
-Unstructured text with an owner and optional sharing. Default: private.
+Unstructured text with an owner, creation timestamp, update timestamp, and optional sharing. Default: private.
 
 ### List and list item
 
-A named collection of checkable items. Lists may be private or shared. New lists default to private unless the request explicitly says otherwise.
+A named collection of checkable items with creation and update timestamps. Lists may be private or shared. New lists default to private unless the request explicitly says otherwise. Each list item also records when it was created.
 
 ### Reminder
 
@@ -192,7 +186,9 @@ A time-based commitment containing:
 - due date/time and timezone;
 - optional recurrence, deferred initially;
 - recipients: creator, Niki, Ben, or both as authorised;
+- whether it is urgent;
 - status;
+- creation and update timestamps;
 - notification delivery history.
 
 ### Agent execution
@@ -228,12 +224,11 @@ An auditable record linking a capture to:
 - Gemini MCP integration only if the feasibility gate passes.
 - PWA share-target fallback if direct Gemini invocation is unavailable but Gemini can share text into the installed PWA.
 - Tailscale-only main PWA and API.
+- PostgreSQL on `fedora-1` as the application database and reminder scheduling source of truth.
 - Basic backups, health checks, structured logs, and agent evaluation fixtures.
 
 ### Explicitly deferred
 
-- Garmin Connect IQ application and public watch ingress.
-- Direct recording through a Garmin microphone.
 - A full native Android application.
 - Android AppFunctions production integration until Gemini access is generally available for this app/device/account.
 - Browser audio recording and server-side speech-to-text unless the Gemini path proves inadequate.
@@ -279,6 +274,7 @@ An auditable record linking a capture to:
 - Create, edit, complete, cancel, snooze, and reschedule a reminder.
 - Select one or both household recipients.
 - Store dates in UTC while preserving intended timezone.
+- Allow a reminder to be marked urgent.
 - Recover scheduling state after process or server restart.
 - Avoid duplicate delivery through idempotent delivery records.
 - Expose delivery status to the creator.
@@ -352,9 +348,9 @@ The first complete release is successful when:
 9. The general application remains unavailable outside the tailnet.
 10. The public integration endpoint cannot read or enumerate household content.
 
-## Revised delivery plan
+## Delivery plan
 
-### Phase 1: Useful PWA — unchanged
+### Phase 1: Useful PWA without AI integration
 
 Build the useful product before any AI or external integration:
 
@@ -440,7 +436,7 @@ Use actual capture and review data to prioritise:
 - search improvements;
 - lower-friction confirmations;
 - native Android AppFunctions only when generally available and clearly better than remote MCP/share flow;
-- future capture adapters, including Garmin, only if they add enough value.
+- future capture adapters only if they add enough value.
 
 ## Open product questions
 
@@ -452,8 +448,4 @@ Use actual capture and review data to prioritise:
 - Should a named **Shopping** list be shared by default while other lists remain private?
 - How long should raw captures and agent execution payloads be retained?
 - Which LLM provider/model should the LangGraph workflow use initially, and what cost/privacy constraints should govern that choice?
-- Should the repository be renamed now that Garmin is no longer in the active roadmap?
-
-## Decision record
-
-See [`decisions/0001-gemini-langgraph-capture.md`](decisions/0001-gemini-langgraph-capture.md) for the feasibility constraints, rejected Garmin-first design, and fallback strategy.
+- What should the product and repository be named?

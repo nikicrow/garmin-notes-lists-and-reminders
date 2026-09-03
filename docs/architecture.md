@@ -2,13 +2,15 @@
 
 ## Status
 
-Proposed architecture for discovery and phased implementation.
+Current architecture for phased implementation.
 
-This revision replaces the Garmin-first capture path with a channel-independent Python LangGraph command workflow and a conditional Gemini adapter. Phase 1 remains a useful PWA without AI integration.
+## Documentation policy
 
-## Key decision
+This repository keeps only the current product brief and architecture. Do not add decision logs, superseded designs, migration narratives, or descriptions of what the system used to be; Git history provides that record.
 
-The domain architecture must not depend on Gemini, Garmin, or any other capture channel.
+## Architecture rule
+
+The domain architecture must not depend on any capture channel.
 
 ```text
 raw message from any authenticated channel
@@ -60,7 +62,6 @@ The system must:
 - Google's custom MCP flow currently requires manual confirmation for write actions.[2]
 - Android AppFunctions are an on-device MCP-like integration mechanism, but Gemini integration is still a private preview and requires Android 16 or later.[3]
 - Therefore direct Gemini-to-custom-app voice capture is a **feasibility-gated adapter**, not a Phase 1 assumption.
-- Garmin Connect IQ and server-side audio transcription are removed from the active MVP architecture.
 
 ## System context
 
@@ -102,7 +103,7 @@ flowchart TB
             API[FastAPI application]
             AGENT[LangGraph worker/runtime]
             REMINDER[Reminder worker]
-            DB[(SQLite)]
+            DB[(PostgreSQL)]
         end
         PHONE1[Niki Android]
         PHONE2[Ben Android]
@@ -137,7 +138,7 @@ flowchart TB
         API[Private FastAPI application]
         AGENT[LangGraph workflow]
         WORKER[Reminder worker]
-        DB[(SQLite)]
+        DB[(PostgreSQL)]
     end
 
     GEMINI -->|HTTPS MCP + OAuth| FUNNEL
@@ -270,18 +271,24 @@ flowchart TD
 #### Graph state
 
 ```python
-class CaptureState(TypedDict):
+from datetime import datetime
+from uuid import UUID
+
+from pydantic import BaseModel, Field
+
+
+class CaptureState(BaseModel):
     capture_id: UUID
     user_id: UUID
     raw_text: str
     reference_time: datetime
     timezone: str
-    allowed_people: list[PersonRef]
-    candidate_lists: list[ListRef]
+    allowed_people: list[PersonRef] = Field(default_factory=list)
+    candidate_lists: list[ListRef] = Field(default_factory=list)
     plan: CommandPlan | None
-    validation_issues: list[ValidationIssue]
+    validation_issues: list[ValidationIssue] = Field(default_factory=list)
     policy_decision: PolicyDecision | None
-    execution_results: list[ActionResult]
+    execution_results: list[ActionResult] = Field(default_factory=list)
     status: CaptureStatus
 ```
 
@@ -337,6 +344,7 @@ class CreateReminder(BaseModel):
     due_local: datetime | None
     timezone: str
     recipient_user_ids: list[UUID]
+    is_urgent: bool = False
 
 class CommandPlanV1(BaseModel):
     schema_version: Literal["1"]
@@ -551,21 +559,58 @@ sequenceDiagram
 
 ## Data model
 
-Use opaque UUIDs. Mutable records include `created_at`, `updated_at`, and optimistic concurrency metadata where useful.
+Use opaque UUIDs. Mutable records include `created_at`, `updated_at`, and optimistic concurrency metadata where useful. The server assigns creation timestamps; clients and agent command plans cannot supply them.
 
-### Existing product entities
+### Core product entities
 
-- `users`
-- `auth_credentials`
-- `devices`
-- `push_subscriptions`
-- `notes`
-- `lists`
-- `list_items`
-- `reminders`
-- `resource_memberships`
-- `reminder_recipients`
-- `notification_deliveries`
+#### `notes`
+
+- `id`
+- `owner_user_id`
+- `body`
+- `created_at`
+- `updated_at`
+- `archived_at`
+
+#### `lists`
+
+- `id`
+- `owner_user_id`
+- `title`
+- `created_at`
+- `updated_at`
+- `archived_at`
+
+#### `list_items`
+
+- `id`
+- `list_id`
+- `body`
+- `position`
+- `created_by_user_id`
+- `created_at`
+- `updated_at`
+- `completed_at`
+- `completed_by_user_id`
+
+#### `reminders`
+
+- `id`
+- `creator_user_id`
+- `title`
+- `detail`
+- `due_at_utc`
+- `source_timezone`
+- `is_urgent`
+- `status`
+- `created_at`
+- `updated_at`
+- `completed_at`
+- `cancelled_at`
+
+`is_urgent` defaults to `false` and controls urgency presentation and notification treatment; it does not bypass authorization or validation.
+
+The remaining product entities are `users`, `auth_credentials`, `devices`, `push_subscriptions`, `resource_memberships`, `reminder_recipients`, and `notification_deliveries`.
 
 ### `captures`
 
@@ -788,22 +833,14 @@ Run deterministic unit tests on resolvers/tools on every change. Run model-backe
 
 ## Deployment and persistence
 
-Initial single-host processes:
+Single-host processes on `fedora-1`:
 
 1. private FastAPI/PWA process;
 2. LangGraph execution worker or bounded in-process executor;
 3. reminder worker;
 4. conditional MCP/OAuth process only after Phase 4 go decision.
 
-SQLite remains acceptable for the initial two-user product if:
-
-- WAL mode and busy timeouts are configured;
-- agent and reminder claims use short transactions;
-- migrations are managed with Alembic;
-- backups are automated and restore-tested;
-- model calls never hold database write transactions open.
-
-Move to PostgreSQL only when concurrency or operational evidence justifies it.
+PostgreSQL on `fedora-1` is the application database and scheduling source of truth. Migrations are managed with Alembic; backups are automated and restore-tested; agent and reminder claims use short transactions; and model calls never hold database transactions open.
 
 ## Testing strategy
 
@@ -845,9 +882,9 @@ Move to PostgreSQL only when concurrency or operational evidence justifies it.
 - Gemini Live versus Spark availability;
 - share-target fallback content and tap count.
 
-## Revised delivery plan
+## Delivery plan
 
-### Phase 1 — Useful PWA (unchanged)
+### Phase 1 — Useful PWA without AI integration
 
 Implement accounts, manual notes, private/shared lists, list items, one-time reminders, responsive UI, migrations/backups, and private Tailscale deployment.
 
@@ -873,20 +910,7 @@ If no-go: accept Gemini-shared text into the installed PWA and reuse the Phase 3
 
 ### Phase 6 — Refinement
 
-Prioritise safe edits/completions, recurrence, better resolution, offline behaviour, search, and only then optional AppFunctions, Garmin, or other adapters.
-
-## Removed architecture
-
-The following are no longer active MVP components:
-
-- Monkey C Garmin application;
-- watch pairing and credentials;
-- Tailscale Funnel watch-event ingress;
-- watch-triggered push-to-recorder flow;
-- browser audio recording and `faster-whisper` transcription;
-- separate Note/List/Reminder buttons as a prerequisite for natural-language capture.
-
-Historical Git commits retain the prior design if it needs to be revisited.
+Prioritise safe edits/completions, recurrence, better resolution, offline behaviour, search, and optional AppFunctions or other capture adapters.
 
 ## Open architecture decisions
 
@@ -897,11 +921,7 @@ Historical Git commits retain the prior design if it needs to be revisited.
 - Whether production MCP OAuth is implemented in-process or through a small vetted authorization component.
 - Whether Gemini supplies a stable request identifier; the feasibility spike must measure retry behaviour rather than assume it.
 - Whether the share target receives the user's transcript, Gemini's response, or both.
-- Whether repository/package names should drop Garmin before code scaffolding.
-
-## Decision record
-
-See [`decisions/0001-gemini-langgraph-capture.md`](decisions/0001-gemini-langgraph-capture.md).
+- Product and repository name before code scaffolding.
 
 ## Sources
 
