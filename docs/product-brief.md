@@ -2,41 +2,57 @@
 
 ## Working title
 
-Garmin Notes, Lists and Reminders
+Notes, Lists and Reminders
+
+> The repository still has its original Garmin-oriented name. Renaming it is a separate decision and is not required before implementation.
 
 ## Status
 
-Discovery / pre-MVP
+Discovery / pre-MVP — revised for Gemini voice capture and a Python LangGraph command agent.
 
 ## Product purpose
 
-A private family capture system that lets Niki and Ben quickly create, organise, share, and receive reminders, notes, and list items from a Garmin watch, Android phone, or computer.
+A private family capture system that lets Niki and Ben quickly create, organise, share, and receive notes, list items, and reminders from an Android phone or computer.
 
-The product is not intended to compete with general-purpose note-taking applications. Its primary value is reducing the effort between remembering something and capturing it:
+The primary value is reducing the effort between remembering something and capturing it:
 
-> Capture something before it disappears, from whichever device is currently easiest.
+> Capture something before it disappears, in natural language, and let the app work out where it belongs.
+
+## Revised product direction
+
+The active plan no longer depends on a Garmin Connect IQ application.
+
+- The PWA remains the source of truth and the management surface.
+- Gemini on Android supplies the voice interaction and transcript.
+- Gemini sends the raw user message to a narrow integration endpoint when a supported direct integration is available.
+- A Python LangGraph workflow owns domain interpretation: what operation is requested, whether it is a note, list change, or reminder, and which validated fields are required.
+- Deterministic application services—not the language model—perform authorised database writes.
+- Ambiguous or unsafe requests are retained as captures for review rather than guessed.
+
+Garmin integration is deferred from the active roadmap. It can be reconsidered later as another capture adapter, but no PWA, domain, or agent component should depend on it.
 
 ## Problem
 
-Thoughts and small commitments often occur when opening a phone or laptop is inconvenient. A Garmin watch is immediately available, but it is not a practical place to enter or organise detailed information. Existing tools also split notes, lists, reminders, sharing, and voice capture across separate workflows.
+Thoughts and small commitments often occur when opening and navigating a full application is inconvenient. Existing tools split notes, lists, reminders, sharing, and natural-language capture across separate workflows.
 
 Niki and Ben need one private system where they can:
 
-- initiate a capture from a Garmin watch;
-- record or type the content on an Android phone;
+- say or type a natural-language request;
+- have the app determine the intended operation and structure;
 - create and review content from a phone or laptop;
 - maintain shared lists;
 - assign reminder notifications to Niki, Ben, or both;
-- trust that reminders survive restarts and are delivered once;
-- keep the primary application inside their home Tailscale network.
+- trust that reminders survive restarts and are delivered idempotently;
+- keep the main application inside their home Tailscale network.
 
 ## Users
 
 ### Niki
 
 - Primary product owner and initial power user.
-- Uses a Garmin Venu 3-family device, Android phone, and laptop.
-- Wants rapid voice capture and a richer desktop review experience.
+- Uses an Android phone and laptop.
+- Uses Gemini on her phone for voice interaction and transcription.
+- Wants low-friction capture and a richer desktop review experience.
 - Needs personal and shared notes, lists, and reminders.
 
 ### Ben
@@ -44,62 +60,85 @@ Niki and Ben need one private system where they can:
 - Household collaborator.
 - Uses an Android phone and laptop.
 - Needs to receive shared reminders and update shared lists.
-- Should not need a Garmin watch to use the application.
+- Does not need Gemini integration to use the application.
 
 ## Product principles
 
-1. **Capture first, organise second.** A thought should never be lost because classification takes too long.
-2. **The watch initiates; the phone completes.** The Garmin interaction should take only a few taps.
-3. **Confirm uncertain interpretation.** Speech or date parsing must not silently create the wrong reminder.
-4. **Private by default.** Notes are personal unless deliberately shared.
-5. **Reliable reminders over clever reminders.** Durable scheduling and visible delivery state matter more than advanced natural-language features.
-6. **One product across devices.** Phone and desktop use the same PWA and backend.
-7. **Useful without the watch.** Garmin integration enhances a complete notes/lists/reminders application rather than becoming its only entry point.
+1. **Capture first, organise second.** Preserve the original message before interpretation.
+2. **One natural-language entry point.** The user should not have to choose Note, List, or Reminder before speaking.
+3. **One domain brain.** PWA text, Gemini, and future adapters all call the same LangGraph command workflow.
+4. **AI proposes; application code validates and writes.** The model never receives unrestricted database or SQL access.
+5. **Confirm meaningful ambiguity.** Do not silently choose a date, recipient, list, or destructive operation.
+6. **Private by default.** Notes and new lists remain personal unless explicitly shared.
+7. **Reliable reminders over clever reminders.** Durable scheduling and visible delivery state matter more than sophisticated language behaviour.
+8. **Useful without Gemini.** Typed PWA capture and manual CRUD remain complete, reliable product paths.
+9. **Keep integrations replaceable.** Gemini is an input adapter, not the owner of domain rules or stored data.
 
 ## Core user journeys
 
-### 1. Capture from the Garmin watch
+### 1. Natural-language capture through Gemini
 
-1. Niki opens the Connect IQ application.
-2. She chooses **Note**, **List**, **Reminder**, or **Quick capture**.
-3. The watch sends an authenticated capture event.
-4. Niki's Android phone receives a push notification.
-5. She taps the notification and the installed PWA opens directly to the relevant recorder.
-6. She speaks, reviews the transcript and interpreted fields, then saves.
-7. The watch or phone shows a clear success or failure result.
+Target experience, subject to the Gemini integration feasibility gate:
 
-The MVP does not depend on direct microphone access from Monkey C. The selected fallback is to use the watch as a trigger and the phone as the audio capture device.
+1. Niki opens or invokes Gemini on Android and speaks naturally.
+2. Gemini transcribes the request.
+3. Gemini invokes the app's connected tool with the raw message.
+4. The backend authenticates the integration identity and stores an immutable capture record.
+5. The LangGraph workflow loads Niki's timezone, household members, and available lists.
+6. It produces and validates a structured command plan.
+7. The application either executes the plan or puts it in **Needs review**.
+8. Gemini receives a concise receipt such as:
+   - “Added milk and bananas to Shopping.”
+   - “Reminder created for Ben tomorrow at 7:00 pm.”
+   - “Saved as a note.”
+   - “I need you to choose which birthday list you meant.”
 
-### 2. Capture from the phone
+The raw transcript—not a Gemini-selected note/list/reminder schema—is passed into the domain workflow. This keeps classification and structure in one testable place.
 
-1. Niki or Ben opens the installed PWA.
-2. They tap the primary capture action.
-3. They record speech or type text.
-4. The application proposes a note, list item, or reminder.
-5. They confirm or correct the result.
-6. The item becomes available on all their devices.
+### 2. Natural-language capture in the PWA
 
-### 3. Create and manage a reminder
+1. Niki or Ben opens the PWA.
+2. They enter a natural-language request.
+3. The PWA calls the same command endpoint used by external adapters.
+4. The agent proposes and validates an operation.
+5. The result is executed or shown for correction.
 
-1. A user enters or speaks a reminder.
-2. The application extracts a title, time, optional recurrence, and recipients.
-3. The user confirms the interpretation.
-4. The reminder is stored durably.
+This path is implemented before relying on Gemini and becomes the agent's development and evaluation surface.
+
+### 3. Manual PWA use
+
+Users can always bypass the agent and directly:
+
+- create or edit a note;
+- create, rename, share, or archive a list;
+- add, edit, reorder, check, or uncheck list items;
+- create, reschedule, snooze, complete, or cancel a reminder.
+
+Manual operations use the same domain services and authorization rules as agent tools.
+
+### 4. Create and deliver a reminder
+
+1. A user enters or speaks a request.
+2. The agent extracts title, date/time, timezone, recipients, and optional details.
+3. Deterministic validation rejects missing or contradictory required fields.
+4. If confidence and policy allow, the reminder is stored durably; otherwise it enters review.
 5. At the due time, each selected recipient receives a push notification.
-6. The reminder records delivery attempts and can be completed, snoozed, or rescheduled.
+6. Delivery attempts are recorded and idempotent.
 
-### 4. Maintain a shared list
+### 5. Maintain a shared list
 
-1. Niki or Ben opens a shared list such as **Shopping**.
-2. Either user adds, edits, checks, or unchecks an item.
+1. Niki or Ben opens a shared list such as **Shopping**, or asks the agent to change it.
+2. Either user adds, edits, checks, or unchecks items.
 3. Updates synchronise across devices.
-4. The interface shows who added or completed an item where useful.
+4. The interface shows who made the change where useful.
 
-### 5. Review from a laptop
+### 6. Review from a laptop
 
 The desktop view supports:
 
 - recent capture inbox;
+- items needing review;
+- agent execution receipts and errors;
 - notes;
 - lists and list items;
 - upcoming reminders;
@@ -112,28 +151,38 @@ The desktop view supports:
 
 ### Capture
 
-The durable record of what the user originally entered. It may contain:
+The durable record of the user's original input and its processing lifecycle:
 
-- source device and entry mode;
-- raw text or transcript;
-- optional audio reference;
-- interpretation status and confidence;
-- resulting note, list item, or reminder;
-- processing errors.
+- source: PWA, Gemini MCP, share target, or future adapter;
+- raw text;
+- authenticated user;
+- source request/idempotency key;
+- received-at timestamp and timezone context;
+- status: received, interpreting, needs_review, executing, completed, failed;
+- proposed command plan and validation findings;
+- resulting resource identifiers;
+- safe error summary.
 
-A capture remains available if transcription or classification fails, preventing the original thought from being lost.
+A capture remains available if interpretation or execution fails.
+
+### Command plan
+
+A versioned, validated representation of intended actions. The first supported action types are:
+
+- `create_note`;
+- `create_list`;
+- `add_list_items`;
+- `create_reminder`.
+
+A single utterance may produce several actions, but they execute as one explicit plan with clear partial-failure semantics. Edit, completion, deletion, and bulk operations are added only after the create flows are reliable.
 
 ### Note
 
-Unstructured text with an owner and optional sharing.
-
-Default: private.
+Unstructured text with an owner and optional sharing. Default: private.
 
 ### List and list item
 
-A named collection of checkable items. Lists may be private or shared with household members.
-
-Default for a new list: private, with an explicit sharing choice.
+A named collection of checkable items. Lists may be private or shared. New lists default to private unless the request explicitly says otherwise.
 
 ### Reminder
 
@@ -141,14 +190,22 @@ A time-based commitment containing:
 
 - title and optional detail;
 - due date/time and timezone;
-- optional recurrence;
-- recipients: Niki, Ben, or both;
-- status such as pending, completed, or cancelled;
+- optional recurrence, deferred initially;
+- recipients: creator, Niki, Ben, or both as authorised;
+- status;
 - notification delivery history.
 
-### Device
+### Agent execution
 
-A registered browser, phone, or Garmin watch credential. Device registration enables push delivery, watch pairing, and credential revocation.
+An auditable record linking a capture to:
+
+- graph and prompt/schema version;
+- model/provider identifier;
+- structured plan;
+- validation result;
+- tool calls and outcomes;
+- review decision, if any;
+- latency and token metadata without storing hidden reasoning.
 
 ## MVP scope
 
@@ -158,45 +215,51 @@ A registered browser, phone, or Garmin watch credential. Device registration ena
 - Responsive Android/desktop PWA.
 - Installable PWA manifest and service worker.
 - Notes with private-by-default sharing.
-- Private and shared lists.
-- Checkable list items.
-- One-time reminders.
-- Reminder recipients: me, Ben/Niki, or both.
-- Web Push subscriptions per browser/device.
-- Reminder delivery worker with durable delivery records.
-- Typed capture from phone and desktop.
-- Phone audio recording and server-side transcription.
-- Transcript review before saving.
-- Garmin watch trigger for phone capture.
-- Pairing and revoking a Garmin watch.
-- Tailscale-only main application.
-- Narrow authenticated ingress for the watch.
-- Basic backup, health check, and structured logs.
+- Private and shared lists with checkable items.
+- One-time reminders and household recipients.
+- Web Push subscriptions and durable reminder delivery.
+- Typed natural-language capture in the PWA.
+- Python LangGraph command workflow with structured output.
+- Versioned command schemas and deterministic validation.
+- A capture inbox and **Needs review** flow.
+- Idempotent domain tools for creating notes, lists, list items, and reminders.
+- A narrow external integration boundary suitable for remote MCP.
+- Gemini custom Connected App feasibility spike on Niki's real account and phone.
+- Gemini MCP integration only if the feasibility gate passes.
+- PWA share-target fallback if direct Gemini invocation is unavailable but Gemini can share text into the installed PWA.
+- Tailscale-only main PWA and API.
+- Basic backups, health checks, structured logs, and agent evaluation fixtures.
 
 ### Explicitly deferred
 
-- Native Android companion application.
-- Direct recording through the Garmin microphone.
-- iPhone/iPad support beyond standards-compatible best effort.
+- Garmin Connect IQ application and public watch ingress.
+- Direct recording through a Garmin microphone.
+- A full native Android application.
+- Android AppFunctions production integration until Gemini access is generally available for this app/device/account.
+- Browser audio recording and server-side speech-to-text unless the Gemini path proves inadequate.
+- Automatic execution of destructive commands.
+- Complex recurrence and location-triggered reminders.
 - More than one household.
-- Complex roles or enterprise permissions.
 - Collaborative rich-text editing.
-- Attachments other than short capture audio.
-- Location-triggered reminders.
-- Calendar integration.
-- Email or SMS delivery.
-- AI agents acting autonomously on reminders.
-- Automatic creation when transcription or parsing confidence is low.
+- Email, SMS, or calendar integration.
+- A general-purpose autonomous personal assistant.
 
 ## Functional requirements
 
-### Capture requirements
+### Capture and agent
 
-- A user can create a capture from phone or desktop using text.
-- A user can record a short audio capture from an Android PWA.
-- The backend can transcribe the audio and retain the raw transcript.
-- Failed or uncertain captures remain visible in an inbox.
-- A user can convert a capture to a note, list item, or reminder.
+- Accept raw natural-language text from the authenticated PWA.
+- Accept raw natural-language text from a separately authenticated external adapter.
+- Persist the raw capture before invoking a model.
+- Resolve relative dates using the authenticated user's timezone and an explicit reference timestamp.
+- Load only authorised household context.
+- Produce a versioned structured command plan.
+- Validate every plan deterministically before execution.
+- Never expose SQL or unrestricted persistence access to the agent.
+- Use idempotency keys to make retries safe.
+- Retain ambiguous, invalid, or failed requests in **Needs review**.
+- Return a concise, factual receipt based on committed database state.
+- Support a dry-run/evaluation mode that cannot write production data.
 
 ### Notes
 
@@ -208,128 +271,189 @@ A registered browser, phone, or Garmin watch credential. Device registration ena
 
 - Create, rename, archive, and share lists.
 - Add, edit, reorder, check, uncheck, and delete list items.
+- Resolve list names conservatively; never silently choose between plausible matches.
 - Synchronise changes across devices.
 
 ### Reminders
 
 - Create, edit, complete, cancel, snooze, and reschedule a reminder.
 - Select one or both household recipients.
-- Store dates in UTC while preserving the user's intended timezone.
-- Recover scheduling state after application or server restart.
-- Avoid duplicate notification delivery through idempotent delivery records.
+- Store dates in UTC while preserving intended timezone.
+- Recover scheduling state after process or server restart.
+- Avoid duplicate delivery through idempotent delivery records.
 - Expose delivery status to the creator.
 
 ### Notifications
 
 - Register and revoke Web Push subscriptions per browser/device.
-- Send a capture notification after a valid watch trigger.
-- Send due-reminder notifications to all selected recipients.
+- Send due-reminder notifications to selected recipients.
 - Open the correct PWA route when a notification is tapped.
 - Use minimal notification content when the device is locked.
 
-### Garmin
+### Gemini integration
 
-- Pair a watch without entering a long secret on the watch.
-- Store a revocable, device-specific credential.
-- Offer Note, List, Reminder, and Quick capture actions.
-- Send an authenticated, replay-resistant event to the watch ingress.
-- Show clear queued, sent, and failed states.
+- Expose only narrowly scoped integration tools; the first tool accepts one raw capture message.
+- Authenticate and map every integration request to an application user.
+- Keep the main application API inaccessible from the public internet.
+- Support token revocation and per-user rate limits.
+- Return no household content beyond the minimum receipt required for the current request.
+- Treat Gemini-supplied text as untrusted input.
+- Preserve Google-side write confirmation where the Connected App flow requires it.
 
 ## Non-functional requirements
 
 ### Privacy and security
 
-- The main PWA and general API remain accessible only inside the tailnet.
-- Public watch ingress exposes only the minimum watch-event API.
-- No application secrets are committed to Git.
-- Credentials can be revoked per watch or browser.
-- Authorization is checked for every shared resource.
-- Notification payloads avoid unnecessary sensitive content.
-- Audio retention is configurable and defaults to deletion after successful confirmation unless product testing shows a need to retain it.
+- The PWA and general API remain tailnet-only.
+- Any remote MCP ingress is deployed as a separate public listener and process.
+- Public integration tools cannot read or enumerate household content.
+- No application secrets or private infrastructure identifiers are committed.
+- OAuth credentials and tokens are revocable and never logged.
+- Authorization is checked inside domain services, regardless of caller.
+- Model prompts contain only the minimum household context needed for the command.
+- Raw captures and agent traces have explicit retention rules.
 
 ### Reliability
 
-- Restarting any application process does not lose notes, lists, reminders, or pending reminder schedules.
-- Notification attempts are recorded and idempotent.
-- Failed notification deliveries are retryable with bounded backoff.
+- Restarting processes does not lose captures, notes, lists, reminders, or pending schedules.
+- Capture execution and notification delivery are idempotent.
+- A model outage leaves the capture recoverable and retryable.
+- Failed notification deliveries use bounded retries.
 - Database backups are automated and restorable.
+
+### Agent quality
+
+- A versioned evaluation set covers representative notes, lists, reminders, compound requests, ambiguous dates, recipient ambiguity, and adversarial input.
+- Schema-valid output is necessary but not sufficient; tests also assert the intended resource changes.
+- Prompt/schema/model changes run against the evaluation set before deployment.
+- Logs record decisions and tool outcomes, not hidden chain-of-thought.
 
 ### Performance
 
 Initial targets for the two-user deployment:
 
-- Interactive API responses under 500 ms for normal CRUD operations on the home network.
-- Watch trigger acknowledged within 3 seconds under normal connectivity.
-- Android capture notification delivered within 10 seconds under normal connectivity.
-- A short audio capture transcribed quickly enough that review feels conversational; the exact target will be set after benchmarking `fedora-1`.
-
-### Accessibility and usability
-
-- Large phone capture controls usable one-handed.
-- Keyboard-accessible desktop interface.
-- Visible labels in addition to colour and icons.
-- Clear timezone and recipient display before saving reminders.
-- Errors preserve the user's entered or spoken content.
+- Normal CRUD responses under 500 ms on the home network.
+- Agent capture acknowledgement immediately after durable persistence.
+- Typical one-action interpretation and execution under 8 seconds.
+- Due reminders offered to the push provider within 60 seconds of their scheduled time.
 
 ## Success criteria
 
-The MVP is successful when:
+The first complete release is successful when:
 
-1. Niki can initiate a reminder from the Garmin, finish speaking it on Android, and receive the reminder later.
-2. Niki can assign a reminder to Ben and his Android device receives it.
-3. Niki and Ben can maintain a shared shopping list from phone and laptop.
-4. A server restart does not lose or duplicate pending reminders.
-5. A failed transcription remains recoverable from the capture inbox.
-6. The general application remains unavailable outside the tailnet.
-7. The public watch endpoint cannot read or enumerate household content.
+1. Niki can type a natural-language request in the PWA and the correct note, list item, or reminder is created.
+2. Niki can speak through Gemini and deliver the resulting raw message to the same workflow, if the direct integration feasibility gate passes.
+3. If that gate does not pass, the product remains complete and a documented share-to-PWA path preserves most of the voice-capture value.
+4. Niki can assign a reminder to Ben and his Android device receives it.
+5. Niki and Ben can maintain a shared shopping list from phone and laptop.
+6. Ambiguous requests are held for review rather than silently misfiled.
+7. Retrying the same integration request does not create duplicate resources.
+8. A server restart does not lose or duplicate pending reminders.
+9. The general application remains unavailable outside the tailnet.
+10. The public integration endpoint cannot read or enumerate household content.
 
-## Delivery stages
+## Revised delivery plan
 
-### Stage 0: Integration feasibility spike
+### Phase 1: Useful PWA — unchanged
 
-Prove the riskiest path end to end:
+Build the useful product before any AI or external integration:
 
-1. Minimal Monkey C application on the target Garmin.
-2. Authenticated HTTPS event through a narrow Tailscale Funnel ingress.
-3. Backend receipt and validation.
-4. Web Push to an Android device.
-5. Notification tap deep-links into a test PWA recording route.
+- Niki and Ben accounts;
+- manual notes;
+- private and shared lists;
+- list items;
+- one-time reminders;
+- responsive phone/desktop UI;
+- Tailscale Serve deployment;
+- database migrations, backups, and basic health checks.
 
-### Stage 1: Useful PWA without Garmin
+**Exit criterion:** both users can reliably manage notes, lists, and reminders from phone and laptop without Gemini.
 
-Implement accounts, typed capture, notes, shared lists, one-time reminders, and private Tailscale deployment.
+### Phase 2: Reliable reminders and sharing
 
-### Stage 2: Reliable notifications and sharing
+- Web Push subscription management;
+- reminder worker;
+- recipients;
+- retries and delivery history;
+- notification deep links;
+- sharing authorization tests;
+- restart and duplicate-delivery tests.
 
-Implement push subscription management, the reminder delivery worker, recipients, retries, delivery history, and notification deep links.
+**Exit criterion:** a reminder to either or both users is durable, observable, and idempotent across restarts.
 
-### Stage 3: Voice capture
+### Phase 3: LangGraph command workflow
 
-Implement browser audio recording, local transcription, transcript review, capture inbox, and conservative intent/date extraction.
+- Add durable captures and agent execution records.
+- Define versioned Pydantic command schemas.
+- Implement agent-safe domain tools over application services.
+- Build the graph: persist → load context → interpret → validate → policy gate → execute/review → receipt.
+- Route PWA natural-language text through the graph.
+- Add the review inbox and correction flow.
+- Build and automate a representative evaluation suite.
 
-### Stage 4: Garmin integration
+**Exit criterion:** PWA text requests create the right resources or enter review, with no direct model access to persistence.
 
-Implement pairing, watch menus, production watch ingress, phone capture notifications, and real-device testing.
+### Phase 4: Gemini connection feasibility gate
 
-### Stage 5: Refinement
+Time-box a real-device spike after the command workflow exists:
 
-Consider recurrence, richer offline behaviour, search improvements, templates, and better natural-language interpretation based on actual usage.
+- verify Niki's Gemini account, country, language, mobile app, and Spark/Connected App availability;
+- expose a disposable authenticated MCP tool that echoes a non-sensitive test value;
+- connect it from Gemini and invoke it by voice on Android;
+- measure required taps, write confirmation behaviour, latency, retries, and idempotency metadata;
+- verify whether the flow works in normal Gemini chat, Gemini Live, or only Gemini Spark;
+- delete the disposable endpoint after the decision.
+
+**Go:** proceed only if voice invocation is available to Niki, the flow is acceptably short, authentication is supportable, and raw message text reaches the backend reliably.
+
+**No-go:** keep the PWA complete, implement the installed-PWA share target if viable, and monitor custom Connected Apps/AppFunctions availability. Do not build a permanent public MCP service around an unavailable client feature.
+
+### Phase 5A: Production Gemini MCP adapter — only after a go decision
+
+- Separate public integration process/listener.
+- Standards-compliant remote MCP transport.
+- OAuth account linking, token rotation, and revocation.
+- One narrow `capture_message` tool accepting raw text and an idempotency key where the client permits.
+- Mapping from OAuth identity to application user.
+- Rate limits, minimal responses, audit logging, and replay tests.
+- End-to-end Android voice tests with notes, lists, reminders, ambiguity, and retries.
+
+**Exit criterion:** Niki can speak a request to Gemini, approve the connected-app write if required, and receive a receipt matching committed app state.
+
+### Phase 5B: Share-to-PWA fallback — if direct MCP is unavailable
+
+- Register the installed PWA as a text share target where supported.
+- Accept shared transcript text into a prefilled capture review screen.
+- Submit it to the same LangGraph endpoint.
+- Document the shortest reliable Gemini-to-share flow on Niki's phone.
+
+This is a fallback, not a second domain implementation.
+
+### Phase 6: Refinement
+
+Use actual capture and review data to prioritise:
+
+- safe agent-supported edits and completion actions;
+- recurrence;
+- improved list/entity resolution;
+- richer offline behaviour;
+- search improvements;
+- lower-friction confirmations;
+- native Android AppFunctions only when generally available and clearly better than remote MCP/share flow;
+- future capture adapters, including Garmin, only if they add enough value.
 
 ## Open product questions
 
-- Confirm the exact Garmin model variant and target Connect IQ API level.
-- Should all newly created lists remain private, or should a named household list such as **Shopping** be shared by default?
+- What exact spoken prefix or app name should reliably route a request to our Connected App?
+- Is Gemini Spark available on Niki's personal account in Australia, and does its mobile flow meet the capture-speed goal?
+- Is one Google-side confirmation tap acceptable for writes?
+- Should unambiguous note/list/reminder creation auto-execute after that confirmation, or should reminders always receive an in-app review?
 - What should the default reminder recipient be: creator only or both users?
-- How long should confirmed audio be retained, if at all?
-- Which reminder recurrence patterns are important enough for the first post-MVP release?
-- Should quick capture always enter the inbox, or should high-confidence interpretations be saved automatically later?
-- What wording and information are acceptable on the Android lock screen?
+- Should a named **Shopping** list be shared by default while other lists remain private?
+- How long should raw captures and agent execution payloads be retained?
+- Which LLM provider/model should the LangGraph workflow use initially, and what cost/privacy constraints should govern that choice?
+- Should the repository be renamed now that Garmin is no longer in the active roadmap?
 
-## References
+## Decision record
 
-- [Garmin Connect IQ `Toybox.Communications`](https://developer.garmin.com/connect-iq/api-docs/Toybox/Communications.html)
-- [Garmin Connect IQ `WatchUi.TextPicker`](https://developer.garmin.com/connect-iq/api-docs/Toybox/WatchUi/TextPicker.html)
-- [Garmin: Communicating with Mobile Apps](https://developer.garmin.com/connect-iq/core-topics/communicating-with-mobile-apps/)
-- [MDN Push API](https://developer.mozilla.org/en-US/docs/Web/API/Push_API)
-- [Tailscale Funnel](https://tailscale.com/kb/1223/funnel)
-- [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve)
+See [`decisions/0001-gemini-langgraph-capture.md`](decisions/0001-gemini-langgraph-capture.md) for the feasibility constraints, rejected Garmin-first design, and fallback strategy.

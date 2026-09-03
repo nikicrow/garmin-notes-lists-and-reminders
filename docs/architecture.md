@@ -2,9 +2,36 @@
 
 ## Status
 
-Proposed architecture for discovery and MVP implementation.
+Proposed architecture for discovery and phased implementation.
 
-This document records the current design direction. Decisions marked **proposed** must be validated by the Stage 0 feasibility spike or confirmed during implementation.
+This revision replaces the Garmin-first capture path with a channel-independent Python LangGraph command workflow and a conditional Gemini adapter. Phase 1 remains a useful PWA without AI integration.
+
+## Key decision
+
+The domain architecture must not depend on Gemini, Garmin, or any other capture channel.
+
+```text
+raw message from any authenticated channel
+                  │
+                  ▼
+        durable Capture record
+                  │
+                  ▼
+       LangGraph command workflow
+                  │
+       structured, versioned plan
+                  │
+                  ▼
+ deterministic validation + policy
+             │             │
+          execute       needs review
+             │             │
+             └──────┬──────┘
+                    ▼
+            factual receipt
+```
+
+Gemini is responsible for voice interaction and transcription. The backend receives raw text and owns intent classification, entity resolution, structure, validation, and execution.
 
 ## Architecture goals
 
@@ -13,165 +40,421 @@ The system must:
 - provide one responsive PWA for Android phones and laptops;
 - support private and shared notes, lists, and reminders;
 - deliver reliable reminders to Niki, Ben, or both;
-- let a Garmin watch initiate phone-based capture;
+- accept natural-language capture without requiring the user to preselect a content type;
+- interpret every natural-language channel through one Python LangGraph workflow;
+- retain the original message before model processing;
+- constrain model output to versioned command schemas;
+- perform writes only through deterministic, authorised application services;
 - keep the main application inside the home tailnet;
-- expose only a minimal, authenticated surface to the Garmin;
-- preserve captures and reminder schedules across restarts;
+- expose a public integration listener only when a proven remote client requires it;
+- preserve captures and schedules across restarts;
 - remain simple enough for a two-user, single-server deployment.
 
-## Constraints and assumptions
+## Constraints and verified platform state
 
 - Both users currently use Android phones.
-- The first Garmin target is in the Venu 3 family; the exact variant and Connect IQ API level must be confirmed.
-- The selected initial watch workflow is **watch trigger → Android notification → PWA audio recorder**.
-- The Garmin does not join the tailnet.
-- A PWA cannot use Garmin's native Android Connect IQ Mobile SDK directly.
 - `fedora-1` is the always-on application server and Tailscale node.
 - The repository is public; secrets, private hostnames, tailnet identifiers, and production credentials must never be committed.
+- Gemini can use Connected Apps and some of those apps are available in Gemini Live, but availability varies by app, device, country, and account.[1]
+- Google's current custom MCP path is limited to Gemini Spark, requires eligible Spark access, is English-only, and is currently limited to adults in the US using a personal Google Account. A custom app is connected from the Gemini web app and can then be used in Spark on mobile or web.[2]
+- Google's custom MCP flow currently requires manual confirmation for write actions.[2]
+- Android AppFunctions are an on-device MCP-like integration mechanism, but Gemini integration is still a private preview and requires Android 16 or later.[3]
+- Therefore direct Gemini-to-custom-app voice capture is a **feasibility-gated adapter**, not a Phase 1 assumption.
+- Garmin Connect IQ and server-side audio transcription are removed from the active MVP architecture.
 
 ## System context
 
 ```mermaid
 flowchart LR
-    N[Niki] -->|watch menu| G[Garmin Connect IQ app]
-    N -->|record, manage| P[PWA]
-    B[Ben] -->|record, manage| P
-    G -->|authenticated capture event| W[Public watch ingress]
-    W --> A[Application API]
-    P -->|private tailnet HTTPS| A
-    A --> D[(Database)]
-    A --> T[Transcription service]
-    R[Reminder worker] --> D
-    R --> PUSH[Web Push services]
-    A --> PUSH
-    PUSH -->|capture and reminder notifications| N
-    PUSH -->|reminder notifications| B
+    N[Niki] -->|speak| GEMINI[Gemini Android]
+    N -->|type, review, manage| PWA[PWA]
+    B[Ben] -->|type, review, manage| PWA
+
+    GEMINI -. conditional remote MCP .-> GI[Gemini integration ingress]
+    GEMINI -. fallback share text .-> PWA
+
+    PWA --> API[Private application API]
+    GI --> CAP[Capture service]
+    API --> CAP
+    CAP --> AGENT[Python LangGraph workflow]
+    AGENT --> DOMAIN[Authorised domain services]
+    DOMAIN --> DB[(Application database)]
+    AGENT --> DB
+
+    WORKER[Reminder worker] --> DB
+    WORKER --> PUSH[Web Push services]
+    PUSH --> N
+    PUSH --> B
 ```
+
+The dotted Gemini routes are alternatives selected after the Phase 4 feasibility gate. The PWA and agent path are useful regardless of that outcome.
 
 ## Deployment topology
 
+### Baseline: Phases 1–3
+
 ```mermaid
 flowchart TB
-    subgraph Internet
-        GARMIN[Garmin watch via connected services]
-        PUSH[Browser push services]
-    end
-
     subgraph Tailnet
         subgraph FEDORA1[fedora-1]
             SERVE[Tailscale Serve :443]
-            FUNNEL[Tailscale Funnel :8443]
             WEB[PWA static assets]
             API[FastAPI application]
-            INGRESS[Watch ingress]
-            WORKER[Reminder worker]
-            TRANSCRIBE[faster-whisper process]
-            DB[(SQLite database)]
+            AGENT[LangGraph worker/runtime]
+            REMINDER[Reminder worker]
+            DB[(SQLite)]
         end
-        ANDROID1[Niki Android]
-        ANDROID2[Ben Android]
+        PHONE1[Niki Android]
+        PHONE2[Ben Android]
         LAPTOP1[Niki laptop]
         LAPTOP2[Ben laptop]
     end
 
-    GARMIN -->|public HTTPS| FUNNEL
-    FUNNEL --> INGRESS
-    INGRESS -->|localhost/internal authenticated request| API
-
-    ANDROID1 --> SERVE
-    ANDROID2 --> SERVE
+    PHONE1 --> SERVE
+    PHONE2 --> SERVE
     LAPTOP1 --> SERVE
     LAPTOP2 --> SERVE
     SERVE --> WEB
     SERVE --> API
-
+    API --> AGENT
     API --> DB
-    API --> TRANSCRIBE
-    WORKER --> DB
-    API --> PUSH
-    WORKER --> PUSH
-    PUSH --> ANDROID1
-    PUSH --> ANDROID2
+    AGENT --> DB
+    REMINDER --> DB
 ```
 
-### Network separation
+### Conditional production Gemini adapter
 
-The design deliberately uses two listeners:
+```mermaid
+flowchart TB
+    subgraph Internet
+        GEMINI[Gemini Connected App client]
+        PUSH[Browser push services]
+    end
 
-1. **Private application listener — Tailscale Serve on 443**
-   - PWA assets.
-   - General API.
-   - Authentication and account management.
-   - Notes, lists, reminders, audio, and search.
-   - Available only to tailnet devices.
+    subgraph FEDORA1[fedora-1]
+        FUNNEL[Tailscale Funnel dedicated port]
+        MCP[Public MCP/OAuth integration process]
+        API[Private FastAPI application]
+        AGENT[LangGraph workflow]
+        WORKER[Reminder worker]
+        DB[(SQLite)]
+    end
 
-2. **Public watch listener — Tailscale Funnel on 8443**
-   - A dedicated ingress process.
-   - Only the watch pairing/capture protocol needed by Connect IQ.
-   - No general API routing.
-   - No ability to read household content.
+    GEMINI -->|HTTPS MCP + OAuth| FUNNEL
+    FUNNEL --> MCP
+    MCP -->|authenticated internal capture command| API
+    API --> AGENT
+    AGENT --> DB
+    WORKER --> DB
+    WORKER --> PUSH
+```
 
-Tailscale does not allow the same port to be private with Serve and public with Funnel simultaneously. Separate ports and separate local upstreams make the exposure explicit.
+The public MCP process is not deployed until the real-device feasibility gate passes.
+
+## Network separation
+
+### Private application listener
+
+Tailscale Serve exposes to tailnet devices only:
+
+- PWA assets;
+- general API;
+- authentication and account management;
+- notes, lists, reminders, captures, review, and search;
+- push-subscription registration;
+- agent execution status and receipts.
+
+### Conditional public integration listener
+
+A separate Tailscale Funnel port and local process expose only:
+
+- MCP protocol discovery/transport required by the selected Gemini client;
+- OAuth authorization-server metadata and account linking where required;
+- a narrowly scoped capture tool;
+- minimal health metadata if needed operationally.
+
+It must not route to the general API, serve the PWA, enumerate users or content, or accept arbitrary resource identifiers without an authenticated user context.
+
+Separate ports, processes, routers, credentials, logs, and tests make accidental exposure harder. If direct Gemini integration is unavailable, this listener does not exist.
 
 ## Component responsibilities
 
 ### PWA
 
-**Proposed stack:** React, TypeScript, Vite, and a service worker built with a small explicit setup or Workbox.
+**Proposed stack:** React, TypeScript, Vite, TanStack Query, and a service worker built explicitly or with Workbox.
 
 Responsibilities:
 
 - responsive phone and desktop interface;
-- installable web application manifest;
-- typed and audio capture;
-- transcript review and correction;
-- notes, lists, reminders, and search;
+- installable manifest;
+- manual notes, lists, reminders, sharing, and search;
+- typed natural-language capture;
+- capture inbox and **Needs review** UI;
+- display proposed plans and validation errors in user language;
+- edit and resubmit uncertain captures;
 - Web Push permission and subscription registration;
 - notification deep-link routing;
-- small offline queue for unsent captures;
-- optimistic list-item updates with server reconciliation.
+- optional Web Share Target receiver for Gemini text fallback;
+- small offline queue for direct manual operations where safe.
 
-The browser is not the authoritative reminder scheduler. It may display local state, but all due-reminder decisions come from the backend database and worker.
+The PWA does not implement its own classifier. It calls the same capture service as external adapters.
 
-### Application API
+### Private application API
 
 **Proposed stack:** Python, FastAPI, Pydantic, SQLAlchemy 2.x, and Alembic.
 
 Responsibilities:
 
-- application authentication and session handling;
+- application authentication and sessions;
 - authorization for owned and shared resources;
-- CRUD operations and validation;
-- capture ingestion and interpretation orchestration;
-- audio upload lifecycle;
-- push-subscription registration;
-- Garmin pairing and device management;
+- manual CRUD operations;
+- capture ingestion;
 - transaction boundaries and idempotency;
+- agent invocation and status;
+- review, correction, approval, and retry endpoints;
+- push-subscription registration;
 - health and readiness endpoints.
 
 Suggested API prefix: `/api/v1`.
 
-### Watch ingress
+The API persists a capture before agent invocation. For synchronous requests it may then wait for a short agent result; if processing exceeds the response budget, it returns `202 Accepted` with a capture status URL.
 
-A deliberately small service or narrowly configured FastAPI sub-application bound to a separate local port.
+### Capture service
+
+A channel-neutral application service used by the PWA, MCP adapter, share target, and future integrations.
+
+Input envelope:
+
+```json
+{
+  "source": "pwa_text",
+  "raw_text": "Add milk and bananas to the shopping list",
+  "source_request_id": "opaque-idempotency-key",
+  "occurred_at": "2026-09-03T08:15:00+10:00",
+  "client_timezone": "Australia/Brisbane"
+}
+```
+
+The authenticated caller determines the user. The payload cannot nominate an arbitrary owner.
 
 Responsibilities:
 
-- terminate only behind Tailscale Funnel;
-- validate watch credentials;
-- enforce request timestamp and nonce/replay rules;
-- rate-limit per credential and source;
-- validate a small fixed schema;
-- submit a capture-trigger command to the private application API;
-- return minimal success/failure information.
+1. validate size, encoding, source, and timestamp bounds;
+2. enforce idempotency on `(source, authenticated_subject, source_request_id)`;
+3. persist raw input and request metadata;
+4. enqueue or invoke the LangGraph workflow;
+5. return the existing receipt on safe retry.
 
-It must not:
+### LangGraph command workflow
 
-- expose general user authentication;
-- return notes, lists, reminders, users, or push subscriptions;
-- accept audio;
-- share the main API router by accident;
-- trust a user identifier supplied without a valid device credential.
+LangGraph is suitable here because it can combine deterministic and model-driven nodes while retaining explicit state, persistence, and human review boundaries.[4] The model remains swappable; LangGraph is the orchestration layer, not the model provider.
+
+Proposed graph:
+
+```mermaid
+flowchart TD
+    START([Capture persisted]) --> LOAD[Load authorised context]
+    LOAD --> INTERPRET[LLM structured interpretation]
+    INTERPRET --> SCHEMA{Schema valid?}
+    SCHEMA -- no --> REVIEW[Needs review]
+    SCHEMA -- yes --> RESOLVE[Deterministic entity/date resolution]
+    RESOLVE --> POLICY{Policy permits execution?}
+    POLICY -- no --> REVIEW
+    POLICY -- yes --> EXECUTE[Execute domain tools transactionally]
+    EXECUTE --> VERIFY[Read committed state]
+    VERIFY --> RECEIPT[Build factual receipt]
+    REVIEW --> RECEIPT
+    RECEIPT --> END([Completed])
+```
+
+#### Graph state
+
+```python
+class CaptureState(TypedDict):
+    capture_id: UUID
+    user_id: UUID
+    raw_text: str
+    reference_time: datetime
+    timezone: str
+    allowed_people: list[PersonRef]
+    candidate_lists: list[ListRef]
+    plan: CommandPlan | None
+    validation_issues: list[ValidationIssue]
+    policy_decision: PolicyDecision | None
+    execution_results: list[ActionResult]
+    status: CaptureStatus
+```
+
+Do not store hidden chain-of-thought. Persist inputs, structured outputs, validation decisions, tool calls, and results.
+
+#### Model boundary
+
+The model receives:
+
+- raw message;
+- explicit reference timestamp and timezone;
+- authenticated user's display name;
+- a minimal list of authorised household members;
+- candidate lists with stable opaque IDs and names;
+- command schema and policy-relevant instructions.
+
+It does not receive:
+
+- database credentials;
+- arbitrary SQL tools;
+- unrelated note bodies or reminder histories;
+- secrets or push subscription data;
+- authority to bypass domain validation.
+
+The agent uses structured output so every proposed plan is validated as a Pydantic discriminated union before it can reach a tool. LangChain agents support schema-constrained structured responses, but application validation remains mandatory.[5]
+
+### Command schemas
+
+Version 1 supports creation only:
+
+```python
+class CreateNote(BaseModel):
+    type: Literal["create_note"]
+    body: str
+    share_with_user_ids: list[UUID] = []
+
+class CreateList(BaseModel):
+    type: Literal["create_list"]
+    title: str
+    items: list[str] = []
+    share_with_user_ids: list[UUID] = []
+
+class AddListItems(BaseModel):
+    type: Literal["add_list_items"]
+    list_id: UUID | None
+    list_name_as_spoken: str
+    items: list[str]
+
+class CreateReminder(BaseModel):
+    type: Literal["create_reminder"]
+    title: str
+    detail: str | None = None
+    due_local: datetime | None
+    timezone: str
+    recipient_user_ids: list[UUID]
+
+class CommandPlanV1(BaseModel):
+    schema_version: Literal["1"]
+    actions: list[CreateNote | CreateList | AddListItems | CreateReminder]
+    ambiguities: list[Ambiguity]
+```
+
+Exact Pydantic syntax will be fixed in implementation. The architecture requirement is a versioned discriminated union with bounded action count and string lengths.
+
+### Deterministic resolver and policy gate
+
+The resolver, not the model, makes final decisions about:
+
+- whether a list ID exists and is accessible;
+- whether a person is a valid household recipient;
+- timezone conversion and date validity;
+- duplicate items where product rules define deduplication;
+- action-count and payload limits;
+- whether all actions can commit atomically;
+- whether a request must enter review.
+
+Initial review policy:
+
+| Situation | Result |
+| --- | --- |
+| Clear private note | Execute |
+| Exact authorised list match and non-empty items | Execute |
+| New list with explicit title | Execute |
+| Reminder with explicit resolvable date/time and recipient | Execute |
+| Missing reminder date/time | Needs review |
+| Multiple plausible list matches | Needs review |
+| Unknown recipient | Needs review |
+| Destructive/edit action in a creation-only schema | Needs review as unsupported |
+| More than the configured maximum actions | Reject safely |
+| Model/schema/validation failure | Needs review |
+
+Google-side Connected App write confirmation is an additional client safety layer, not a substitute for this policy.
+
+### Domain tools
+
+The agent can call small Python functions backed by the same services as manual API routes:
+
+- `create_note(command, actor)`;
+- `create_list(command, actor)`;
+- `add_list_items(command, actor)`;
+- `create_reminder(command, actor)`.
+
+Each tool:
+
+- accepts a validated command, not free-form text;
+- receives actor identity from trusted runtime context;
+- rechecks authorization;
+- is idempotent under the capture/action key;
+- writes through a transaction;
+- returns typed identifiers and facts from committed state;
+- emits an audit event.
+
+No tool accepts SQL, table names, arbitrary URLs, or caller-supplied user identity.
+
+### Gemini MCP adapter — conditional
+
+This adapter exists only if Phase 4 proves it works on Niki's actual account and Android flow.
+
+Responsibilities:
+
+- implement the remote MCP transport expected by Gemini Spark/Connected Apps;
+- implement OAuth account linking, including metadata and dynamic client registration if required by the chosen client configuration;
+- map OAuth subject to a single application user;
+- expose one initial write tool:
+
+```text
+capture_message(raw_text: string) -> CaptureReceipt
+```
+
+- generate a server-side idempotency key if the client cannot supply one;
+- enforce payload limits and per-subject rate limits;
+- pass the raw text unchanged to the capture service;
+- return only the receipt for that capture.
+
+The MCP tool should not expose separate `create_note`, `add_to_list`, or `create_reminder` operations. Doing so would let Gemini own classification and duplicate business rules that belong in LangGraph.
+
+#### Authentication
+
+Preferred flow:
+
+1. Niki connects the MCP URL in Gemini's custom Connected Apps settings.
+2. Gemini initiates OAuth authorization.
+3. Niki authenticates to the application through a tailnet-accessible or deliberately bounded linking flow.
+4. The authorization server issues a narrow, revocable token for `capture:write`.
+5. MCP requests map token subject to Niki; request arguments cannot switch users.
+
+The feasibility spike must prove this flow before the production design is frozen. Google documents Dynamic Client Registration or manually supplied client credentials for custom MCP connections.[2]
+
+#### Public-ingress threat controls
+
+- Dedicated process and port.
+- TLS through Funnel.
+- OAuth token validation and narrow scopes.
+- No bearer tokens in query strings or logs.
+- Rate limits per subject and source address.
+- Maximum raw-text size and action count.
+- Request deadlines and bounded agent concurrency.
+- Replay/idempotency handling.
+- Generic external errors; detailed internal correlation IDs.
+- No read/list/search MCP tools in the initial release.
+- Security tests proving general API routes are absent.
+
+### Share-target fallback
+
+If direct custom MCP is unavailable, the installed PWA may register as a Web Share Target:
+
+1. Niki uses Gemini's available share action for the transcript/response.
+2. Android offers the installed PWA as a destination.
+3. The service worker/application opens `/capture/shared` with prefilled raw text.
+4. Niki reviews and submits.
+5. The same capture service and LangGraph workflow run.
+
+This adds taps and therefore does not satisfy “direct send,” but it preserves a Gemini transcription path without a native Android app. The real-device spike must verify whether Gemini shares the user transcript, its response, or both in a usable form.
 
 ### Reminder worker
 
@@ -179,261 +462,180 @@ A separate Python process using the same domain and persistence packages as the 
 
 Responsibilities:
 
-- query due reminders from the database;
+- claim due reminders transactionally;
 - create deterministic delivery records;
 - send Web Push messages;
 - retry transient failures with bounded backoff;
-- disable expired subscriptions when push services report them as gone;
-- update delivery status;
+- disable expired subscriptions;
+- record delivery outcomes;
 - recover naturally after restart.
 
-The database is the scheduling source of truth. The worker should poll and claim due work transactionally rather than relying solely on in-memory timers.
-
-### Transcription service
-
-Initial implementation: a local `faster-whisper` process or module on `fedora-1`.
-
-Responsibilities:
-
-- accept short audio captured by the PWA;
-- normalise supported browser audio formats;
-- produce transcript text and confidence metadata where available;
-- enforce upload size and duration limits;
-- delete confirmed audio according to the retention policy.
-
-The transcription boundary should be represented by a Python interface so a hosted implementation can be substituted later without changing capture-domain logic.
-
-### Garmin Connect IQ app
-
-**Language:** Monkey C.
-
-Responsibilities:
-
-- present fast Note, List, Reminder, and Quick capture actions;
-- pair with a user through a short-lived code or authorization flow;
-- store a revocable device credential in application storage;
-- send small authenticated HTTPS events using `Toybox.Communications.makeWebRequest`;
-- display queued, successful, and failed states;
-- avoid presenting a successful state until the backend acknowledges the event.
-
-The MVP does not assume access to watch microphone audio from Monkey C.
+The database remains the scheduling source of truth.
 
 ## Primary flows
 
-### Garmin-triggered phone capture
-
-```mermaid
-sequenceDiagram
-    actor User
-    participant Watch as Garmin app
-    participant Ingress as Watch ingress
-    participant API as Application API
-    participant Push as Web Push service
-    participant SW as Android service worker
-    participant PWA as PWA recorder
-
-    User->>Watch: Choose Reminder
-    Watch->>Ingress: POST capture event + device auth
-    Ingress->>Ingress: Validate token, timestamp, nonce, rate limit
-    Ingress->>API: Create watch capture request
-    API->>Push: Send capture notification
-    Push->>SW: Deliver notification
-    Ingress-->>Watch: Accepted
-    SW-->>User: Show "Record your reminder"
-    User->>PWA: Tap notification
-    PWA->>PWA: Open /capture/reminder
-    User->>PWA: Record and review
-    PWA->>API: Upload/save capture
-    API-->>PWA: Saved structured reminder
-```
-
-### Due reminder delivery
-
-```mermaid
-sequenceDiagram
-    participant Worker as Reminder worker
-    participant DB as Database
-    participant Push as Web Push service
-    participant Device as Recipient device
-
-    Worker->>DB: Claim due reminder deliveries
-    DB-->>Worker: Claimed rows with idempotency keys
-    Worker->>Push: Send encrypted Web Push message
-    alt accepted by push service
-        Push-->>Worker: Accepted
-        Worker->>DB: Record accepted delivery
-        Push-->>Device: Deliver notification
-    else transient failure
-        Push-->>Worker: Retryable error
-        Worker->>DB: Record error and next attempt
-    else expired subscription
-        Push-->>Worker: Subscription gone
-        Worker->>DB: Disable subscription and record failure
-    end
-```
-
-### Voice capture processing
+### PWA natural-language capture
 
 ```mermaid
 sequenceDiagram
     actor User
     participant PWA
     participant API
-    participant STT as Transcription service
-    participant DB as Database
+    participant DB
+    participant Graph as LangGraph
+    participant Domain
 
-    User->>PWA: Record short audio
-    PWA->>API: Create capture and upload audio
-    API->>DB: Store pending capture metadata
-    API->>STT: Transcribe audio
-    STT-->>API: Transcript + metadata
-    API->>DB: Store raw transcript
-    API-->>PWA: Proposed type and fields
-    User->>PWA: Correct and confirm
-    PWA->>API: Final structured item
-    API->>DB: Save item and link capture
-    API-->>PWA: Confirm success
+    User->>PWA: Type natural-language request
+    PWA->>API: POST capture + idempotency key
+    API->>DB: Persist raw capture
+    API->>Graph: Invoke with capture ID
+    Graph->>DB: Load authorised context
+    Graph->>Graph: Interpret and validate plan
+    alt executable
+        Graph->>Domain: Execute typed commands
+        Domain->>DB: Commit idempotent transaction
+        Graph->>DB: Read committed result
+        Graph-->>API: Factual receipt
+    else ambiguous or unsupported
+        Graph->>DB: Mark needs_review + proposed plan
+        Graph-->>API: Review receipt
+    end
+    API-->>PWA: Receipt or review deep link
+```
+
+### Conditional Gemini MCP capture
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant Gemini
+    participant MCP as Public MCP adapter
+    participant API as Private API
+    participant Graph as LangGraph
+    participant DB
+
+    User->>Gemini: Speak request
+    Gemini->>Gemini: Transcribe
+    Gemini-->>User: Confirm connected-app write if required
+    User->>Gemini: Approve
+    Gemini->>MCP: capture_message(raw text) + OAuth
+    MCP->>MCP: Validate token, limits, replay
+    MCP->>API: Internal authenticated capture command
+    API->>DB: Persist raw capture
+    API->>Graph: Invoke capture
+    Graph->>DB: Load context, validate, execute/review
+    Graph-->>API: Receipt from committed state
+    API-->>MCP: Minimal receipt
+    MCP-->>Gemini: Minimal receipt
+    Gemini-->>User: Speak/display result
+```
+
+### Needs-review flow
+
+```mermaid
+sequenceDiagram
+    participant Graph as LangGraph
+    participant DB
+    actor User
+    participant PWA
+    participant Domain
+
+    Graph->>DB: Save proposed plan + validation issues
+    PWA->>DB: Load needs-review capture through API
+    PWA-->>User: Show raw text, proposal, issue
+    User->>PWA: Correct fields and approve
+    PWA->>Domain: Submit validated command plan
+    Domain->>DB: Commit under original capture/action keys
+    Domain-->>PWA: Factual receipt
 ```
 
 ## Data model
 
-The model should use opaque UUIDs or equivalent non-sequential public identifiers. All mutable records include `created_at`, `updated_at`, and a version or equivalent concurrency strategy where useful.
+Use opaque UUIDs. Mutable records include `created_at`, `updated_at`, and optimistic concurrency metadata where useful.
 
-### `users`
+### Existing product entities
 
-- `id`
-- `display_name`
-- `timezone`
-- `status`
-
-### `auth_credentials`
-
-Application-level credentials or passkeys, separate from Garmin device credentials.
-
-- `id`
-- `user_id`
-- `credential_type`
-- credential-specific public data
-- `created_at`
-- `revoked_at`
-
-### `devices`
-
-- `id`
-- `user_id`
-- `kind`: browser, android_pwa, garmin
-- `display_name`
-- `last_seen_at`
-- `revoked_at`
-
-### `watch_credentials`
-
-- `id`
-- `device_id`
-- hashed token or public-key material
-- `created_at`
-- `expires_at` where applicable
-- `revoked_at`
-- `last_nonce` or replay-control metadata
-
-Raw watch secrets are never stored in plaintext if token verification can use a secure hash.
-
-### `push_subscriptions`
-
-- `id`
-- `device_id`
-- endpoint
-- Web Push key material
-- `created_at`
-- `last_success_at`
-- `disabled_at`
-- failure metadata
-
-Endpoint and key material are sensitive application data and must not be logged.
+- `users`
+- `auth_credentials`
+- `devices`
+- `push_subscriptions`
+- `notes`
+- `lists`
+- `list_items`
+- `reminders`
+- `resource_memberships`
+- `reminder_recipients`
+- `notification_deliveries`
 
 ### `captures`
 
 - `id`
 - `user_id`
-- `source`: watch, phone, desktop
-- `requested_kind`: note, list, reminder, quick
-- `input_mode`: text, audio, watch_trigger
+- `source`: pwa_text, gemini_mcp, web_share, future_adapter
+- `source_request_id`
 - `raw_text`
-- `audio_object_key` or local reference
-- `status`: pending, transcribing, needs_review, completed, failed
-- interpretation metadata
-- resulting entity type and identifier
-- error summary safe for display
-
-### `notes`
-
-- `id`
-- `owner_user_id`
-- `body`
-- `archived_at`
-
-### `lists`
-
-- `id`
-- `owner_user_id`
-- `title`
-- `archived_at`
-
-### `list_items`
-
-- `id`
-- `list_id`
-- `body`
-- `position`
-- `created_by_user_id`
-- `completed_at`
-- `completed_by_user_id`
-
-### `reminders`
-
-- `id`
-- `creator_user_id`
-- `title`
-- `detail`
-- `due_at_utc`
-- `source_timezone`
-- recurrence rule, deferred initially
+- `occurred_at`
+- `reference_timezone`
 - `status`
-- `completed_at`
-- `cancelled_at`
-
-### `resource_memberships`
-
-A generic or explicit mapping granting a user access to a note or list. Reminder recipients are modelled separately because notification state is part of the relationship.
-
-- `id`
-- resource type and identifier
-- `user_id`
-- `permission`: view or edit
-
-### `reminder_recipients`
-
-- `reminder_id`
-- `user_id`
-- `notification_status`
-- acknowledgement/completion metadata if later required
-
-### `notification_deliveries`
-
-- `id`
-- notification type
-- related entity identifier
-- recipient user and device/subscription
-- deterministic idempotency key
-- attempt count
-- status
-- next attempt time
-- provider response category
+- `active_execution_id`
+- `resulting_resource_summary`
+- `safe_error_code`
 - timestamps
 
-## API outline
+Unique constraint on `(source, user_id, source_request_id)`.
 
-This is a boundary sketch, not a frozen contract.
+### `agent_executions`
+
+- `id`
+- `capture_id`
+- `attempt_number`
+- `graph_version`
+- `command_schema_version`
+- `prompt_version`
+- `model_provider`
+- `model_name`
+- `status`
+- `structured_plan_json`
+- `validation_issues_json`
+- `policy_decision_json`
+- `started_at`, `completed_at`
+- latency/token/cost metadata where available
+- safe error fields
+
+Do not persist hidden model reasoning.
+
+### `agent_action_executions`
+
+- `id`
+- `agent_execution_id`
+- `action_index`
+- `action_type`
+- `idempotency_key`
+- `validated_command_json`
+- `status`
+- `result_entity_type`
+- `result_entity_id`
+- `result_summary_json`
+- timestamps
+
+Unique constraint on the idempotency key.
+
+### `integration_identities`
+
+- `id`
+- `user_id`
+- `provider`: gemini_mcp
+- `external_subject_hash` or non-sensitive stable subject identifier
+- `scopes`
+- `created_at`
+- `last_used_at`
+- `revoked_at`
+
+### OAuth storage
+
+If the selected MCP connection requires our service to act as an authorization server, store clients, grants, access-token hashes, refresh-token hashes, scopes, expiry, and revocation state in dedicated tables. Never store raw bearer tokens when hash verification is possible.
+
+## API outline
 
 ### Private application API
 
@@ -442,10 +644,11 @@ POST   /api/v1/sessions
 DELETE /api/v1/sessions/current
 
 POST   /api/v1/captures/text
-POST   /api/v1/captures/audio
 GET    /api/v1/captures
 GET    /api/v1/captures/{capture_id}
+POST   /api/v1/captures/{capture_id}/retry
 POST   /api/v1/captures/{capture_id}/confirm
+POST   /api/v1/captures/{capture_id}/reject
 
 GET    /api/v1/notes
 POST   /api/v1/notes
@@ -470,403 +673,240 @@ POST   /api/v1/reminders/{reminder_id}/snooze
 
 POST   /api/v1/push-subscriptions
 DELETE /api/v1/push-subscriptions/{subscription_id}
-
-POST   /api/v1/watch-pairings
-GET    /api/v1/watch-pairings/{pairing_id}
-DELETE /api/v1/devices/{device_id}
 ```
 
-### Public watch API
+### Internal adapter API
+
+Bound only to localhost or a private Unix socket:
 
 ```text
-POST /watch/v1/pairings/claim
-POST /watch/v1/capture-events
+POST /internal/v1/integration-captures
+GET  /internal/v1/integration-captures/{capture_id}/receipt
 ```
 
-Pairing details remain a design item. The preferred pattern is a short-lived, single-use code initiated from the authenticated PWA, followed by issuing a device-specific credential.
+Use service authentication in addition to network locality.
 
-Example capture-event body:
+### Conditional public MCP/OAuth surface
 
-```json
-{
-  "event_id": "opaque-client-generated-id",
-  "kind": "reminder",
-  "occurred_at": "2026-09-02T06:00:00Z",
-  "nonce": "unique-random-value"
-}
-```
-
-The authenticated device determines the user. The request body does not choose an arbitrary user or recipient.
-
-## Authentication and authorization
-
-### Application users
-
-Tailscale network membership controls network reachability but may not reliably distinguish Niki and Ben, particularly if devices share a Tailscale account. The application therefore needs its own user identity.
-
-**Proposed initial approach:** device-bound passkeys where browser support and deployment HTTPS permit them, with a small recovery mechanism documented for the household. A simpler authenticated pairing code may be used during the first internal prototype, but permanent shared passwords should be avoided.
-
-Authorization rules:
-
-- owners can manage their resources and sharing;
-- shared members receive only the permission granted;
-- reminder recipients can read reminders addressed to them;
-- only the creator or an explicitly permitted recipient can modify reminder state, according to product rules;
-- all resource queries enforce authorization in the database/domain layer, not only in the UI.
-
-### Garmin device authentication
-
-A watch receives a device-specific credential after pairing. Proposed request protection:
-
-- TLS through Funnel;
-- device token in an authorization header;
-- server stores a secure token hash;
-- event identifier for idempotency;
-- bounded timestamp skew;
-- nonce/replay tracking;
-- per-device rate limits;
-- immediate credential revocation from the PWA.
-
-If Connect IQ storage or crypto APIs make this design unsuitable on the target device, the feasibility spike must revise the protocol before production implementation.
-
-## Notification architecture
-
-### Capture notifications
-
-A valid watch event causes the API to create a short-lived capture request and enqueue a push notification to the paired user's active Android subscriptions.
-
-The notification deep link contains an opaque capture identifier and requested kind, for example:
+Exact paths follow the MCP and OAuth specifications selected during the feasibility spike. Conceptually:
 
 ```text
-/capture/reminder?request=<opaque-id>
+GET/POST /mcp
+GET      /.well-known/oauth-authorization-server
+GET      /.well-known/oauth-protected-resource
+GET/POST /oauth/authorize
+POST     /oauth/token
+POST     /oauth/register       # only if Dynamic Client Registration is required
 ```
 
-### Reminder notifications
+There is no `/api/v1` route on the public listener.
 
-For each reminder recipient, the worker resolves active push subscriptions and creates one delivery per subscription. A deterministic idempotency key prevents duplicate sends for the same reminder occurrence and subscription.
+## Idempotency and transaction semantics
 
-Suggested key shape:
+### Capture idempotency
 
-```text
-reminder:{reminder_id}:occurrence:{due_at_utc}:subscription:{subscription_id}
-```
+- PWA generates a UUID per submission.
+- MCP uses a client-provided request ID if available; otherwise the adapter creates one and retains it for the request lifecycle.
+- A repeated source request returns the prior capture and receipt.
 
-### Privacy
+### Action idempotency
 
-Notification payloads should default to minimal lock-screen content, such as:
+Derive an immutable action key from capture ID, plan version, and action index. Domain services claim the key before writing. Retrying a graph after an uncertain response reads the existing action result instead of creating a second resource.
 
-- `Reminder due`
-- `Open the app to view`
+### Compound plans
 
-A user preference may later allow reminder titles on the lock screen.
+Initial rule: validate all actions before executing any. Prefer one database transaction for same-database writes. If an action cannot participate in the transaction, mark compound external side effects unsupported rather than risk partial success.
 
-## Reminder scheduling
+## Security and prompt-injection controls
 
-The MVP supports one-time reminders. Recurrence should be added only after one-time delivery is proven reliable.
+Natural-language input is untrusted. It can contain instructions aimed at the agent or references to resources the user cannot access.
 
-Polling design:
+Controls:
 
-1. Worker wakes at a short interval.
-2. It finds due, pending reminder-recipient occurrences.
-3. It transactionally creates or claims delivery rows.
-4. It sends pushes outside long-held database transactions.
-5. It records accepted, retryable, or permanent outcomes.
-6. Retryable rows receive bounded exponential backoff.
+- fixed system policy and typed schema;
+- minimal authorised context, not broad search results;
+- no general web, shell, filesystem, SQL, or arbitrary HTTP tools;
+- domain tools recheck authorization and invariants;
+- bounded strings, action count, execution time, and retries;
+- no secrets in model context;
+- no model-generated user IDs accepted without resolver matching;
+- unsupported or destructive actions routed to review;
+- model output cannot change system prompts, tool definitions, scopes, or policy;
+- adversarial evaluation cases included in CI.
 
-On restart, pending database rows are naturally rediscovered. No reminder depends on a process-local timer surviving.
+## Observability and evaluation
 
-SQLite supports the initial workload, but writes must be short, indexed, and designed to avoid unnecessary contention between the API and worker. WAL mode and a busy timeout should be configured explicitly.
+### Operational telemetry
 
-## Capture and interpretation pipeline
+- capture intake count and source;
+- status and latency by graph node;
+- model/schema/validation failures;
+- review rate by action type and reason;
+- tool retries and idempotency hits;
+- MCP auth/rate-limit failures without raw tokens;
+- reminder delivery outcomes.
 
-The first implementation should be conservative:
+### Evaluation set
 
-1. Preserve the raw text or transcript.
-2. Detect the requested or likely item kind.
-3. Extract candidate fields.
-4. Assign interpretation confidence or warnings.
-5. Always ask for confirmation when a reminder time or recipient was inferred.
-6. Keep failures in the capture inbox.
+Store versioned, anonymised fixtures with:
 
-Natural-language date parsing should be isolated behind an interface and covered with timezone-focused tests. A rules-based parser is preferable for the first version. An LLM may later propose structure, but it must not be the durable source of truth and must not silently schedule uncertain reminders.
+- input text;
+- fixed reference time/timezone;
+- available people and lists;
+- expected plan or review reason;
+- expected database changes;
+- expected receipt facts.
 
-## Offline and synchronisation strategy
+Coverage should include:
 
-MVP offline support is intentionally narrow:
+- clear notes;
+- one and multiple list items;
+- new versus existing list;
+- relative and absolute reminder dates;
+- Niki, Ben, and both recipients;
+- compound requests;
+- ambiguous list names and dates;
+- duplicates and retries;
+- unsupported edits/deletes;
+- prompt injection and data-exfiltration attempts.
 
-- cache the application shell;
-- keep the latest read state where practical;
-- queue newly typed captures while offline;
-- clearly mark pending synchronisation;
-- do not claim a reminder is scheduled until the backend confirms it;
-- resolve list edits using server versions or timestamps rather than silently overwriting newer state.
+Run deterministic unit tests on resolvers/tools on every change. Run model-backed evaluation before changing prompt, schema, provider, or model in production.
 
-Full multi-device conflict-free collaborative editing is out of scope.
+## Failure handling
 
-## Storage and backup
-
-### Database
-
-Initial database: SQLite with:
-
-- WAL mode;
-- foreign keys enabled;
-- explicit migrations;
-- busy timeout;
-- regular integrity checks;
-- restricted filesystem permissions.
-
-### Audio
-
-Short capture audio may be stored in a private local directory outside the PWA static root. The database stores metadata and a generated object key, never a user-supplied path.
-
-Default proposed lifecycle:
-
-1. Upload with strict duration and size limits.
-2. Transcribe.
-3. Retain until the user confirms or discards the capture.
-4. Delete after confirmation unless a later product decision enables retention.
-
-### Backups
-
-- periodic SQLite online backup to a protected local backup directory;
-- rotation with a small documented retention policy;
-- optional encrypted replication to another tailnet device later;
-- automated restore test, not only backup-file creation.
-
-## Observability
-
-### Structured logs
-
-Log:
-
-- request and correlation identifiers;
-- event type and safe entity identifiers;
-- reminder delivery status categories;
-- watch authentication failures without credentials;
-- transcription duration and outcome;
-- worker cycle and backlog counts.
-
-Never log:
-
-- bearer tokens;
-- push subscription keys or full endpoints;
-- raw audio;
-- full note/reminder content by default;
-- authentication secrets.
-
-### Metrics / health
-
-Initial health surfaces:
-
-- API liveness and readiness;
-- database connectivity;
-- worker last-successful-cycle timestamp;
-- due-delivery backlog;
-- push success/failure counts;
-- transcription duration/error counts;
-- watch event accepted/rejected counts.
-
-A simple internal status page or Prometheus-format endpoint is sufficient; a full observability stack is not required for MVP.
-
-## Security boundaries and threats
-
-| Threat | Primary mitigation |
+| Failure | Behaviour |
 | --- | --- |
-| Public endpoint enumerates household data | Separate ingress with write-only event contract and no general API routes |
-| Stolen/replayed watch request | Per-device credentials, timestamps, nonces, idempotent event IDs, revocation |
-| Compromised browser subscription | Device-level revocation and minimal lock-screen payloads |
-| User accesses another user's private resource | Server-side object authorization on every query/mutation |
-| Duplicate reminder after retry/restart | Deterministic delivery idempotency keys and durable delivery rows |
-| Malicious or oversized audio upload | Authentication, content/type validation, duration/size limits, transcoding isolation |
-| Secret committed to public repository | Environment-backed secrets, example files only, secret scanning in CI |
-| Funnel accidentally exposes the main API | Separate port, process, router, and deployment test from outside the tailnet |
-| Reminder date interpreted incorrectly | Explicit review of inferred date, timezone, recurrence, and recipients |
+| Model unavailable | Capture remains `received`/`failed_retryable`; manual review and retry available |
+| Invalid structured output | Save validation issue; route to review |
+| Ambiguous entity/date | Route to review with targeted issue |
+| Domain validation failure | Roll back transaction; route to review or terminal failure |
+| Timeout after commit | Retry resolves through action idempotency key and returns existing result |
+| Gemini retries tool call | Capture/action keys prevent duplicate resources |
+| OAuth token revoked/expired | Reject before capture creation |
+| Public ingress overloaded | Rate limit/return temporary error; never bypass authentication |
+| Reminder push failure | Record and retry independently of agent execution |
 
-## Repository shape
+## Deployment and persistence
 
-Proposed monorepo structure:
+Initial single-host processes:
 
-```text
-.
-├── apps/
-│   ├── api/                 # FastAPI entry point and HTTP routers
-│   ├── web/                 # React/TypeScript PWA
-│   ├── watch-ingress/       # Narrow public ingress process
-│   ├── reminder-worker/     # Durable notification worker entry point
-│   └── garmin/              # Monkey C Connect IQ application
-├── packages/
-│   └── backend/             # Shared Python domain, persistence, push, transcription
-├── migrations/              # Alembic migrations
-├── deploy/                  # Non-secret deployment and service definitions
-├── docs/
-│   ├── product-brief.md
-│   └── architecture.md
-├── tests/
-│   ├── integration/
-│   └── e2e/
-└── README.md
-```
+1. private FastAPI/PWA process;
+2. LangGraph execution worker or bounded in-process executor;
+3. reminder worker;
+4. conditional MCP/OAuth process only after Phase 4 go decision.
 
-An alternative is placing Python packages under `src/`; the exact Python layout should be decided when scaffolding. The architectural requirement is that API, ingress, and worker entry points share tested domain code without sharing public routes.
+SQLite remains acceptable for the initial two-user product if:
+
+- WAL mode and busy timeouts are configured;
+- agent and reminder claims use short transactions;
+- migrations are managed with Alembic;
+- backups are automated and restore-tested;
+- model calls never hold database write transactions open.
+
+Move to PostgreSQL only when concurrency or operational evidence justifies it.
 
 ## Testing strategy
 
-### Backend unit tests
+### Unit tests
 
-- ownership and sharing rules;
-- reminder due-date and timezone handling;
-- idempotency key generation;
-- retry classification;
-- capture state transitions;
-- watch request timestamp and nonce validation;
-- conservative interpretation behaviour.
+- Pydantic command schemas;
+- date/timezone resolution;
+- list and recipient matching;
+- policy decisions;
+- domain tool authorization;
+- idempotency-key behaviour;
+- receipt generation from committed records.
 
-### API integration tests
+### Integration tests
 
-- private-resource isolation;
-- shared list collaboration;
-- reminder recipient permissions;
-- audio validation;
-- watch ingress cannot access general resources;
-- push subscription lifecycle;
-- restart/recovery behaviour against a real SQLite database.
+- API → capture persistence → graph → domain write;
+- review correction → original capture → one committed action;
+- concurrent duplicate requests;
+- transaction rollback for invalid compound plans;
+- reminder worker restart and duplicate prevention;
+- public listener route allowlist;
+- OAuth token scope, expiry, and revocation if MCP is built.
 
-### PWA tests
+### Model evaluations
 
-- component tests for capture review and reminder confirmation;
-- service-worker push handling;
-- notification deep links;
-- offline capture queue;
-- responsive phone and desktop flows;
-- Playwright end-to-end scenarios.
+- golden command plans;
+- expected review decisions;
+- expected database diffs;
+- adversarial and malformed input;
+- regression comparison across prompt/model versions.
 
-### Garmin tests
+### Real-device tests
 
-- Monkey C unit tests where supported;
-- Connect IQ simulator communication tests;
-- target-device pairing and event tests;
-- disconnected-phone and timeout behaviour;
-- duplicate button press/idempotency behaviour.
+- installed PWA on both Android phones;
+- push permissions and reminder delivery;
+- Gemini account eligibility and connected-app visibility;
+- voice → raw text → MCP tool → receipt;
+- manual write confirmation experience;
+- Gemini Live versus Spark availability;
+- share-target fallback content and tap count.
 
-### Deployment tests
+## Revised delivery plan
 
-From inside the tailnet:
+### Phase 1 — Useful PWA (unchanged)
 
-- PWA and private API are reachable over Serve.
+Implement accounts, manual notes, private/shared lists, list items, one-time reminders, responsive UI, migrations/backups, and private Tailscale deployment.
 
-From outside the tailnet:
+### Phase 2 — Reliable notifications and sharing
 
-- PWA and private API are not reachable.
-- only the intended watch ingress port and routes are reachable.
-- unsupported paths and methods fail closed.
+Implement Web Push, reminder worker, recipients, retries, delivery history, deep links, and authorization/restart tests.
 
-## Delivery and operations
+### Phase 3 — Channel-neutral LangGraph command workflow
 
-Initial deployment should use systemd services or containers with equivalent restart and health behaviour. The decision can be made during scaffolding based on the repository's development experience.
+Implement captures, execution records, schemas, deterministic resolvers, policy gate, domain tools, PWA text capture, review UI, idempotency, and evaluation fixtures.
 
-Required long-running processes:
+### Phase 4 — Gemini feasibility gate
 
-- PWA/static server or API-served static build;
-- FastAPI application;
-- watch ingress;
-- reminder worker;
-- transcription process if separated.
+Prove on Niki's actual account and Android phone whether voice can invoke a custom MCP Connected App, with usable authentication, confirmation, latency, raw-text fidelity, and retry behaviour. Do not deploy permanent public ingress before this passes.
 
-Deployment must include:
+### Phase 5A — Production remote MCP adapter
 
-- environment-backed secrets;
-- database and audio directories mounted persistently;
-- migrations before application promotion;
-- service restart policy;
-- Tailscale Serve and Funnel configuration documentation;
-- backup and restore commands;
-- rollback procedure.
+Only after Phase 4 go: build the isolated MCP/OAuth process, Funnel exposure, narrow tool, account mapping, revocation, rate limits, audits, and end-to-end tests.
 
-## Architectural decisions
+### Phase 5B — PWA share-target fallback
 
-### ADR-001: PWA before native Android
+If no-go: accept Gemini-shared text into the installed PWA and reuse the Phase 3 workflow. Keep monitoring platform support without blocking the product.
 
-**Status:** Proposed.
+### Phase 6 — Refinement
 
-Use an installable PWA for phone and desktop. Build a native Android companion only if the watch HTTPS path or PWA notification flow proves insufficient.
+Prioritise safe edits/completions, recurrence, better resolution, offline behaviour, search, and only then optional AppFunctions, Garmin, or other adapters.
 
-**Reason:** One codebase meets current phone and laptop needs and avoids an unnecessary native release pipeline.
+## Removed architecture
 
-### ADR-002: Watch initiates, phone records
+The following are no longer active MVP components:
 
-**Status:** Selected for MVP.
+- Monkey C Garmin application;
+- watch pairing and credentials;
+- Tailscale Funnel watch-event ingress;
+- watch-triggered push-to-recorder flow;
+- browser audio recording and `faster-whisper` transcription;
+- separate Note/List/Reminder buttons as a prerequisite for natural-language capture.
 
-The Connect IQ app triggers a notification; audio is captured in the Android PWA.
+Historical Git commits retain the prior design if it needs to be revisited.
 
-**Reason:** This preserves rapid wrist initiation without depending on unconfirmed Monkey C microphone access.
+## Open architecture decisions
 
-### ADR-003: Private main app plus narrow public ingress
+- Initial model provider and privacy/cost budget for LangGraph.
+- Exact synchronous versus queued execution threshold.
+- Whether reminders with fully explicit fields auto-execute or always enter review.
+- Raw capture and agent trace retention periods.
+- Whether production MCP OAuth is implemented in-process or through a small vetted authorization component.
+- Whether Gemini supplies a stable request identifier; the feasibility spike must measure retry behaviour rather than assume it.
+- Whether the share target receives the user's transcript, Gemini's response, or both.
+- Whether repository/package names should drop Garmin before code scaffolding.
 
-**Status:** Proposed; validate in Stage 0.
+## Decision record
 
-Use Tailscale Serve for the private app and a separate Tailscale Funnel listener for watch events.
+See [`decisions/0001-gemini-langgraph-capture.md`](decisions/0001-gemini-langgraph-capture.md).
 
-**Reason:** The watch cannot join the tailnet, while household content should not be publicly exposed.
+## Sources
 
-### ADR-004: SQLite first
-
-**Status:** Proposed.
-
-Use SQLite in WAL mode with Alembic migrations and durable worker tables.
-
-**Reason:** The two-user, single-host workload does not justify PostgreSQL operational overhead. Persistence interfaces and migrations should keep later migration possible.
-
-### ADR-005: Database-backed reminder scheduling
-
-**Status:** Selected.
-
-Use a polling worker and durable delivery rows rather than in-memory-only timers.
-
-**Reason:** Reminders must survive restarts and avoid duplicate sends.
-
-### ADR-006: Conservative interpretation
-
-**Status:** Selected.
-
-Preserve raw captures and require confirmation of inferred reminder times and recipients.
-
-**Reason:** A missed clarification is less harmful than silently notifying the wrong person at the wrong time.
-
-## Stage 0 feasibility spike acceptance criteria
-
-The architecture is viable when a throwaway vertical slice proves all of the following on real devices:
-
-1. The target Garmin Connect IQ app can issue the required authenticated HTTPS request.
-2. The Funnel listener receives only the expected watch request.
-3. A duplicate watch event is processed once.
-4. The backend sends Web Push to Niki's Android PWA subscription.
-5. The notification arrives while the PWA is closed or not focused.
-6. Tapping it opens the correct capture route.
-7. The main PWA/API remains unreachable outside the tailnet.
-8. A revoked watch credential is rejected.
-9. Median and worst observed trigger-to-notification latency are recorded.
-10. Failures on disconnected phone/watch paths are understandable to the user.
-
-If items 1–6 fail for platform reasons, revisit a minimal native Android companion using Garmin's Connect IQ Mobile SDK before building the full Garmin integration.
-
-## Open architecture questions
-
-- Exact Garmin model, firmware, and supported Connect IQ API level.
-- Whether `makeWebRequest` reaches the Funnel endpoint reliably in all expected connectivity modes.
-- Best application authentication method for Niki and Ben: passkeys, device pairing, or another low-friction private approach.
-- Whether `fedora-1` can transcribe short recordings locally within an acceptable latency target.
-- Browser audio format emitted by the chosen Android browsers and the required transcoding path.
-- Whether SQLite contention remains negligible with API, worker, and transcription metadata writes.
-- Lock-screen notification privacy preference.
-- Final audio retention policy.
-- Whether the watch requires acknowledgement only for server receipt or also for successful phone push acceptance.
-
-## References
-
-- [Garmin Connect IQ `Toybox.Communications`](https://developer.garmin.com/connect-iq/api-docs/Toybox/Communications.html)
-- [Garmin Connect IQ `WatchUi.TextPicker`](https://developer.garmin.com/connect-iq/api-docs/Toybox/WatchUi/TextPicker.html)
-- [Garmin: Communicating with Mobile Apps](https://developer.garmin.com/connect-iq/core-topics/communicating-with-mobile-apps/)
-- [MDN Push API](https://developer.mozilla.org/en-US/docs/Web/API/Push_API)
-- [Tailscale Funnel](https://tailscale.com/kb/1223/funnel)
-- [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve)
+[1] https://support.google.com/gemini/answer/13695044?hl=en&co=GENIE.Platform%3DAndroid — Use and manage Connected Apps in Gemini
+[2] https://support.google.com/gemini/answer/17209137?hl=en&co=GENIE.Platform%3DDesktop — Connect custom apps for Gemini Spark
+[3] https://developer.android.com/ai/appfunctions — Overview of Android AppFunctions
+[4] https://docs.langchain.com/oss/python/langgraph/overview — LangGraph overview
+[5] https://docs.langchain.com/oss/python/langchain/agents — LangChain agents
