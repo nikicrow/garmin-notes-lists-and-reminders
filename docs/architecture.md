@@ -705,6 +705,9 @@ GET    /api/v1/lists
 POST   /api/v1/lists
 GET    /api/v1/lists/{list_id}
 PATCH  /api/v1/lists/{list_id}
+DELETE /api/v1/lists/{list_id}
+PUT    /api/v1/lists/{list_id}/members/{user_id}
+DELETE /api/v1/lists/{list_id}/members/{user_id}
 POST   /api/v1/lists/{list_id}/items
 PATCH  /api/v1/lists/{list_id}/items/{item_id}
 DELETE /api/v1/lists/{list_id}/items/{item_id}

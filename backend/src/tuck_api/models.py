@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, ForeignKey, MetaData, String, Text, Uuid, func
+from sqlalchemy import DateTime, ForeignKey, MetaData, String, Text, UniqueConstraint, Uuid, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 NAMING_CONVENTION = {
@@ -57,3 +57,21 @@ class Note(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     body: Mapped[str] = mapped_column(Text)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+
+class List(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "lists"
+
+    owner_user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    title: Mapped[str] = mapped_column(String(200))
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+
+class ResourceMembership(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "resource_memberships"
+    __table_args__ = (UniqueConstraint("list_id", "user_id"),)
+
+    list_id: Mapped[UUID] = mapped_column(ForeignKey("lists.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
