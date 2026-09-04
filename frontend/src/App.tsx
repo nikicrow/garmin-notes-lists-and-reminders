@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-import { ApiError, authApi, type User } from './api'
+import { ApiError, authApi, notesApi, type Note, type User } from './api'
 
 type AuthState =
   | { status: 'checking' }
@@ -61,6 +61,166 @@ function LoginForm({ onLogin }: { onLogin: (user: User) => void }) {
         </button>
       </form>
     </main>
+  )
+}
+
+function NotesPage() {
+  const [notes, setNotes] = useState<Note[] | null>(null)
+  const [newBody, setNewBody] = useState('')
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editBody, setEditBody] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let active = true
+    void notesApi
+      .list()
+      .then((loadedNotes) => {
+        if (active) setNotes(loadedNotes)
+      })
+      .catch(() => {
+        if (active) setNotes([])
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  async function createNote(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setSubmitting(true)
+    setError(null)
+    try {
+      const created = await notesApi.create(newBody)
+      setNotes((current) => [created, ...(current ?? [])])
+      setNewBody('')
+    } catch (caught) {
+      setError(messageFor(caught))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function saveNote(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (editingId === null) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      const edited = await notesApi.edit(editingId, editBody)
+      setNotes(
+        (current) =>
+          current?.map((note) => (note.id === edited.id ? edited : note)) ?? [],
+      )
+      setEditingId(null)
+    } catch (caught) {
+      setError(messageFor(caught))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function archiveNote(noteId: string) {
+    setSubmitting(true)
+    setError(null)
+    try {
+      await notesApi.archive(noteId)
+      setNotes((current) => current?.filter((note) => note.id !== noteId) ?? [])
+    } catch (caught) {
+      setError(messageFor(caught))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <section className="notes-page" aria-labelledby="notes-heading">
+      <div className="page-heading">
+        <div>
+          <p className="eyebrow">Your space</p>
+          <h1 id="notes-heading">Notes</h1>
+        </div>
+      </div>
+      <form
+        className="note-composer"
+        onSubmit={(event) => void createNote(event)}
+      >
+        <label htmlFor="new-note">New note</label>
+        <textarea
+          id="new-note"
+          onChange={(event) => setNewBody(event.target.value)}
+          placeholder="What do you want to remember?"
+          required
+          rows={4}
+          value={newBody}
+        />
+        <button disabled={submitting} type="submit">
+          Add note
+        </button>
+      </form>
+      {error === null ? null : <p role="alert">{error}</p>}
+      {notes === null ? <p role="status">Loading notes…</p> : null}
+      {notes?.length === 0 ? <p role="status">No notes yet.</p> : null}
+      {notes === null || notes.length === 0 ? null : (
+        <ul className="note-list" aria-label="Notes">
+          {notes.map((note) => (
+            <li className="note-card" key={note.id}>
+              {editingId === note.id ? (
+                <form onSubmit={(event) => void saveNote(event)}>
+                  <label htmlFor={`edit-${note.id}`}>Edit note</label>
+                  <textarea
+                    id={`edit-${note.id}`}
+                    onChange={(event) => setEditBody(event.target.value)}
+                    required
+                    rows={5}
+                    value={editBody}
+                  />
+                  <div className="note-actions">
+                    <button disabled={submitting} type="submit">
+                      Save
+                    </button>
+                    <button
+                      className="secondary-button"
+                      disabled={submitting}
+                      onClick={() => setEditingId(null)}
+                      type="button"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <>
+                  <p className="note-body">{note.body}</p>
+                  <div className="note-actions">
+                    <button
+                      className="secondary-button"
+                      disabled={submitting}
+                      onClick={() => {
+                        setEditingId(note.id)
+                        setEditBody(note.body)
+                      }}
+                      type="button"
+                    >
+                      Edit
+                    </button>
+                    <button
+                      className="danger-button"
+                      disabled={submitting}
+                      onClick={() => void archiveNote(note.id)}
+                      type="button"
+                    >
+                      Archive
+                    </button>
+                  </div>
+                </>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   )
 }
 
@@ -161,8 +321,14 @@ function AuthenticatedShell({
       </nav>
       <main className="page-content">
         {error === null ? null : <p role="alert">{error}</p>}
-        <h1>{page.title}</h1>
-        <p role="status">{page.empty}</p>
+        {path === '/notes' ? (
+          <NotesPage />
+        ) : (
+          <>
+            <h1>{page.title}</h1>
+            <p role="status">{page.empty}</p>
+          </>
+        )}
       </main>
     </div>
   )

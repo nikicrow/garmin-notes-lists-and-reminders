@@ -24,7 +24,8 @@ body {
 }
 
 button,
-input {
+input,
+textarea {
   font: inherit;
 }
 
@@ -46,6 +47,7 @@ button:disabled {
 
 button:focus-visible,
 input:focus-visible,
+textarea:focus-visible,
 a:focus-visible {
   outline: 3px solid #bd6c39;
   outline-offset: 3px;
@@ -187,6 +189,90 @@ nav a[aria-current='page'] {
   text-align: center;
 }
 
+.notes-page {
+  display: grid;
+  gap: 1.5rem;
+}
+
+.page-heading .eyebrow {
+  margin: 0 0 0.25rem;
+  font-size: 0.9rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.note-composer,
+.note-card form {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.note-composer {
+  padding: clamp(1rem, 4vw, 1.5rem);
+  border: 1px solid #d9d2c3;
+  border-radius: 1rem;
+  background: #fffdf8;
+  box-shadow: 0 0.75rem 2rem rgb(32 49 42 / 7%);
+}
+
+.note-composer label,
+.note-card label {
+  font-weight: 700;
+}
+
+.note-composer textarea,
+.note-card textarea {
+  width: 100%;
+  min-height: 7rem;
+  padding: 0.8rem;
+  resize: vertical;
+  border: 1px solid #8a988f;
+  border-radius: 0.65rem;
+  color: inherit;
+  background: #fff;
+}
+
+.note-composer button {
+  justify-self: stretch;
+}
+
+.note-list {
+  display: grid;
+  gap: 1rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.note-card {
+  padding: clamp(1rem, 4vw, 1.5rem);
+  border: 1px solid #d9d2c3;
+  border-radius: 1rem;
+  background: #fffdf8;
+}
+
+.note-body {
+  margin: 0 0 1rem;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.note-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.secondary-button {
+  color: #245c46;
+  background: #e5eee7;
+}
+
+.danger-button {
+  color: #742b20;
+  background: #fbe8e4;
+}
+
 [role='alert'] {
   padding: 0.75rem;
   border-radius: 0.65rem;
@@ -218,6 +304,10 @@ nav a[aria-current='page'] {
   nav a {
     padding: 1rem 1.5rem;
     text-align: left;
+  }
+
+  .note-composer button {
+    justify-self: end;
   }
 }
 

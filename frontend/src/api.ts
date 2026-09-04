@@ -2,6 +2,14 @@ export interface User {
   username: string
 }
 
+export interface Note {
+  id: string
+  body: string
+  created_at: string
+  updated_at: string
+  archived_at: string | null
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -51,4 +59,20 @@ export const authApi = {
       body: JSON.stringify({ username, password }),
     }),
   logout: () => request<void>('/api/v1/auth/logout', { method: 'POST' }),
+}
+
+export const notesApi = {
+  list: () => request<Note[]>('/api/v1/notes'),
+  create: (body: string) =>
+    request<Note>('/api/v1/notes', {
+      method: 'POST',
+      body: JSON.stringify({ body }),
+    }),
+  edit: (id: string, body: string) =>
+    request<Note>(`/api/v1/notes/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ body }),
+    }),
+  archive: (id: string) =>
+    request<Note>(`/api/v1/notes/${id}`, { method: 'DELETE' }),
 }
