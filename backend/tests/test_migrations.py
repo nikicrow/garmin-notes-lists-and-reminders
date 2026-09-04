@@ -31,5 +31,12 @@ def test_migrations_upgrade_clean_postgresql_database(isolated_database_url: str
 
     revision, tables = asyncio.run(read_migration_state())
 
-    assert revision == "0004_private_shared_lists"
-    assert {"users", "user_sessions", "notes", "lists", "resource_memberships"} <= tables
+    assert revision == "0005_list_items"
+    assert {
+        "users",
+        "user_sessions",
+        "notes",
+        "lists",
+        "resource_memberships",
+        "list_items",
+    } <= tables

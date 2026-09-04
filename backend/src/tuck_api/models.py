@@ -1,7 +1,18 @@
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, ForeignKey, MetaData, String, Text, UniqueConstraint, Uuid, func
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    MetaData,
+    String,
+    Text,
+    UniqueConstraint,
+    Uuid,
+    func,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 NAMING_CONVENTION = {
@@ -75,3 +86,22 @@ class ResourceMembership(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     list_id: Mapped[UUID] = mapped_column(ForeignKey("lists.id", ondelete="CASCADE"), index=True)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+
+
+class ListItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "list_items"
+    __table_args__ = (
+        CheckConstraint("position >= 0", name="position_nonnegative"),
+        UniqueConstraint("list_id", "position", deferrable=True, initially="DEFERRED"),
+    )
+
+    list_id: Mapped[UUID] = mapped_column(ForeignKey("lists.id", ondelete="CASCADE"), index=True)
+    body: Mapped[str] = mapped_column(Text)
+    position: Mapped[int] = mapped_column(Integer)
+    created_by_user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    completed_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None, index=True
+    )
