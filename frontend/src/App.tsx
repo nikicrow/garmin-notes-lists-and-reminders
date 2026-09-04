@@ -5,8 +5,10 @@ import {
   authApi,
   listsApi,
   notesApi,
+  remindersApi,
   type ListItem,
   type Note,
+  type Reminder,
   type TuckList,
   type User,
 } from './api'
@@ -728,6 +730,415 @@ function ListsPage() {
   )
 }
 
+function localTimeInTimezoneToUtc(localTime: string, timezone: string): string {
+  const [date, time] = localTime.split('T')
+  const [year, month, day] = date.split('-').map(Number)
+  const [hour, minute] = time.split(':').map(Number)
+  const desired = Date.UTC(year, month - 1, day, hour, minute)
+  let candidate = desired
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  })
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const parts = Object.fromEntries(
+      formatter
+        .formatToParts(new Date(candidate))
+        .filter((part) => part.type !== 'literal')
+        .map((part) => [part.type, Number(part.value)]),
+    )
+    const represented = Date.UTC(
+      parts.year,
+      parts.month - 1,
+      parts.day,
+      parts.hour,
+      parts.minute,
+    )
+    candidate += desired - represented
+  }
+  return new Date(candidate).toISOString()
+}
+
+function RemindersPage() {
+  const [reminders, setReminders] = useState<Reminder[] | null>(null)
+  const [title, setTitle] = useState('')
+  const [detail, setDetail] = useState('')
+  const [dueAt, setDueAt] = useState('')
+  const [timezone, setTimezone] = useState(
+    () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+  )
+  const [urgent, setUrgent] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editTitle, setEditTitle] = useState('')
+  const [editDetail, setEditDetail] = useState('')
+  const [editUrgent, setEditUrgent] = useState(false)
+  const [timingAction, setTimingAction] = useState<{
+    id: string
+    kind: 'snooze' | 'reschedule'
+  } | null>(null)
+  const [newDueAt, setNewDueAt] = useState('')
+  const [newTimezone, setNewTimezone] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let active = true
+    void remindersApi
+      .list()
+      .then((loaded) => {
+        if (active) setReminders(loaded)
+      })
+      .catch((caught: unknown) => {
+        if (active) {
+          setReminders([])
+          setError(messageFor(caught))
+        }
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  async function createReminder(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setSubmitting(true)
+    setError(null)
+    try {
+      const created = await remindersApi.create({
+        title,
+        detail: detail || null,
+        due_at_utc: localTimeInTimezoneToUtc(dueAt, timezone),
+        source_timezone: timezone,
+        is_urgent: urgent,
+      })
+      setReminders((current) => [...(current ?? []), created])
+      setTitle('')
+      setDetail('')
+      setDueAt('')
+      setUrgent(false)
+    } catch (caught) {
+      setError(messageFor(caught))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  function replaceReminder(updated: Reminder) {
+    setReminders(
+      (current) =>
+        current?.map((reminder) =>
+          reminder.id === updated.id ? updated : reminder,
+        ) ?? [],
+    )
+  }
+
+  async function saveReminder(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (editingId === null) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      replaceReminder(
+        await remindersApi.edit(editingId, {
+          title: editTitle,
+          detail: editDetail || null,
+          is_urgent: editUrgent,
+        }),
+      )
+      setEditingId(null)
+    } catch (caught) {
+      setError(messageFor(caught))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function changeStatus(
+    reminder: Reminder,
+    action: 'complete' | 'cancel',
+  ) {
+    setSubmitting(true)
+    setError(null)
+    try {
+      replaceReminder(await remindersApi[action](reminder.id))
+    } catch (caught) {
+      setError(messageFor(caught))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function changeTiming(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (timingAction === null) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      const dueAtUtc = localTimeInTimezoneToUtc(newDueAt, newTimezone)
+      const updated =
+        timingAction.kind === 'snooze'
+          ? await remindersApi.snooze(timingAction.id, dueAtUtc)
+          : await remindersApi.reschedule(
+              timingAction.id,
+              dueAtUtc,
+              newTimezone,
+            )
+      replaceReminder(updated)
+      setTimingAction(null)
+      setNewDueAt('')
+    } catch (caught) {
+      setError(messageFor(caught))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <section className="reminders-page" aria-labelledby="reminders-heading">
+      <div className="page-heading">
+        <p className="eyebrow">Right on time</p>
+        <h1 id="reminders-heading">Reminders</h1>
+        <p className="phase-notice">
+          Notifications are not delivered in Phase 1.
+        </p>
+      </div>
+      <form
+        className="reminder-composer"
+        onSubmit={(event) => void createReminder(event)}
+      >
+        <label htmlFor="reminder-title">Reminder title</label>
+        <input
+          id="reminder-title"
+          onChange={(event) => setTitle(event.target.value)}
+          required
+          value={title}
+        />
+        <label htmlFor="reminder-detail">Details</label>
+        <textarea
+          id="reminder-detail"
+          onChange={(event) => setDetail(event.target.value)}
+          rows={3}
+          value={detail}
+        />
+        <label htmlFor="reminder-due">Due date and time</label>
+        <input
+          id="reminder-due"
+          onChange={(event) => setDueAt(event.target.value)}
+          required
+          type="datetime-local"
+          value={dueAt}
+        />
+        <label htmlFor="reminder-timezone">Timezone</label>
+        <input
+          id="reminder-timezone"
+          onChange={(event) => setTimezone(event.target.value)}
+          required
+          value={timezone}
+        />
+        <label className="check-label">
+          <input
+            checked={urgent}
+            onChange={(event) => setUrgent(event.target.checked)}
+            type="checkbox"
+          />
+          <span>Urgent</span>
+        </label>
+        <button disabled={submitting} type="submit">
+          Add reminder
+        </button>
+      </form>
+      {error === null ? null : <p role="alert">{error}</p>}
+      {reminders === null ? <p role="status">Loading reminders…</p> : null}
+      {reminders?.length === 0 ? (
+        <p role="status">No upcoming reminders.</p>
+      ) : null}
+      {reminders === null || reminders.length === 0 ? null : (
+        <ul className="reminder-list" aria-label="Reminders">
+          {reminders.map((reminder) => (
+            <li
+              className={reminder.is_urgent ? 'urgent' : ''}
+              key={reminder.id}
+            >
+              {editingId === reminder.id ? (
+                <form
+                  className="reminder-editor"
+                  onSubmit={(event) => void saveReminder(event)}
+                >
+                  <label htmlFor={`edit-reminder-title-${reminder.id}`}>
+                    Edit reminder title
+                  </label>
+                  <input
+                    id={`edit-reminder-title-${reminder.id}`}
+                    onChange={(event) => setEditTitle(event.target.value)}
+                    required
+                    value={editTitle}
+                  />
+                  <label htmlFor={`edit-reminder-detail-${reminder.id}`}>
+                    Edit details
+                  </label>
+                  <textarea
+                    id={`edit-reminder-detail-${reminder.id}`}
+                    onChange={(event) => setEditDetail(event.target.value)}
+                    rows={3}
+                    value={editDetail}
+                  />
+                  <label className="check-label">
+                    <input
+                      checked={editUrgent}
+                      onChange={(event) => setEditUrgent(event.target.checked)}
+                      type="checkbox"
+                    />
+                    <span>Edit urgent</span>
+                  </label>
+                  <div className="compact-actions">
+                    <button disabled={submitting} type="submit">
+                      Save changes
+                    </button>
+                    <button
+                      className="secondary-button"
+                      onClick={() => setEditingId(null)}
+                      type="button"
+                    >
+                      Close editor
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <>
+                  <div className="reminder-heading">
+                    <h2>{reminder.title}</h2>
+                    {reminder.is_urgent ? <strong>Urgent</strong> : null}
+                  </div>
+                  {reminder.detail === null ? null : <p>{reminder.detail}</p>}
+                  <p className="reminder-due">
+                    Due {new Date(reminder.due_at_utc).toLocaleString()} (
+                    {reminder.source_timezone})
+                  </p>
+                  <p className={`status-badge ${reminder.status}`}>
+                    {reminder.status}
+                  </p>
+                  {reminder.status === 'pending' ? (
+                    <div className="compact-actions">
+                      <button
+                        aria-label={`Edit ${reminder.title}`}
+                        className="secondary-button"
+                        onClick={() => {
+                          setEditingId(reminder.id)
+                          setEditTitle(reminder.title)
+                          setEditDetail(reminder.detail ?? '')
+                          setEditUrgent(reminder.is_urgent)
+                        }}
+                        type="button"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        aria-label={`Snooze ${reminder.title}`}
+                        className="secondary-button"
+                        onClick={() => {
+                          setTimingAction({ id: reminder.id, kind: 'snooze' })
+                          setNewTimezone(reminder.source_timezone)
+                          setNewDueAt('')
+                        }}
+                        type="button"
+                      >
+                        Snooze
+                      </button>
+                      <button
+                        aria-label={`Reschedule ${reminder.title}`}
+                        className="secondary-button"
+                        onClick={() => {
+                          setTimingAction({
+                            id: reminder.id,
+                            kind: 'reschedule',
+                          })
+                          setNewTimezone(reminder.source_timezone)
+                          setNewDueAt('')
+                        }}
+                        type="button"
+                      >
+                        Reschedule
+                      </button>
+                      <button
+                        aria-label={`Complete ${reminder.title}`}
+                        disabled={submitting}
+                        onClick={() => void changeStatus(reminder, 'complete')}
+                        type="button"
+                      >
+                        Complete
+                      </button>
+                      <button
+                        aria-label={`Cancel ${reminder.title}`}
+                        className="danger-button"
+                        disabled={submitting}
+                        onClick={() => void changeStatus(reminder, 'cancel')}
+                        type="button"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : null}
+                </>
+              )}
+              {timingAction?.id === reminder.id ? (
+                <form
+                  className="timing-editor"
+                  onSubmit={(event) => void changeTiming(event)}
+                >
+                  <label htmlFor={`new-due-${reminder.id}`}>
+                    {timingAction.kind === 'snooze'
+                      ? 'Snooze until'
+                      : 'New due date and time'}
+                  </label>
+                  <input
+                    id={`new-due-${reminder.id}`}
+                    onChange={(event) => setNewDueAt(event.target.value)}
+                    required
+                    type="datetime-local"
+                    value={newDueAt}
+                  />
+                  {timingAction.kind === 'reschedule' ? (
+                    <>
+                      <label htmlFor={`new-timezone-${reminder.id}`}>
+                        New timezone
+                      </label>
+                      <input
+                        id={`new-timezone-${reminder.id}`}
+                        onChange={(event) => setNewTimezone(event.target.value)}
+                        required
+                        value={newTimezone}
+                      />
+                    </>
+                  ) : null}
+                  <div className="compact-actions">
+                    <button disabled={submitting} type="submit">
+                      {timingAction.kind === 'snooze'
+                        ? 'Confirm snooze'
+                        : 'Confirm reschedule'}
+                    </button>
+                    <button
+                      className="secondary-button"
+                      onClick={() => setTimingAction(null)}
+                      type="button"
+                    >
+                      Close timing editor
+                    </button>
+                  </div>
+                </form>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
 const pages = {
   '/notes': { title: 'Notes', empty: 'No notes yet.' },
   '/lists': { title: 'Lists', empty: 'No lists yet.' },
@@ -752,7 +1163,6 @@ function AuthenticatedShell({
   )
   const [loggingOut, setLoggingOut] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const page = pages[path]
 
   useEffect(() => {
     if (window.location.pathname !== path)
@@ -830,10 +1240,7 @@ function AuthenticatedShell({
         ) : path === '/lists' ? (
           <ListsPage />
         ) : (
-          <>
-            <h1>{page.title}</h1>
-            <p role="status">{page.empty}</p>
-          </>
+          <RemindersPage />
         )}
       </main>
     </div>

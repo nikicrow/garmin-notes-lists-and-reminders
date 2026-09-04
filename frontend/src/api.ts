@@ -32,6 +32,20 @@ export interface ListItem {
   updated_at: string
 }
 
+export interface Reminder {
+  id: string
+  title: string
+  detail: string | null
+  due_at_utc: string
+  source_timezone: string
+  is_urgent: boolean
+  status: 'pending' | 'completed' | 'cancelled'
+  created_at: string
+  updated_at: string
+  completed_at: string | null
+  cancelled_at: string | null
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -97,6 +111,46 @@ export const notesApi = {
     }),
   archive: (id: string) =>
     request<Note>(`/api/v1/notes/${id}`, { method: 'DELETE' }),
+}
+
+export const remindersApi = {
+  list: () => request<Reminder[]>('/api/v1/reminders'),
+  create: (payload: {
+    title: string
+    detail: string | null
+    due_at_utc: string
+    source_timezone: string
+    is_urgent: boolean
+  }) =>
+    request<Reminder>('/api/v1/reminders', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  edit: (
+    id: string,
+    changes: { title: string; detail: string | null; is_urgent: boolean },
+  ) =>
+    request<Reminder>(`/api/v1/reminders/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(changes),
+    }),
+  complete: (id: string) =>
+    request<Reminder>(`/api/v1/reminders/${id}/complete`, { method: 'POST' }),
+  cancel: (id: string) =>
+    request<Reminder>(`/api/v1/reminders/${id}/cancel`, { method: 'POST' }),
+  snooze: (id: string, dueAtUtc: string) =>
+    request<Reminder>(`/api/v1/reminders/${id}/snooze`, {
+      method: 'POST',
+      body: JSON.stringify({ due_at_utc: dueAtUtc }),
+    }),
+  reschedule: (id: string, dueAtUtc: string, sourceTimezone: string) =>
+    request<Reminder>(`/api/v1/reminders/${id}/reschedule`, {
+      method: 'POST',
+      body: JSON.stringify({
+        due_at_utc: dueAtUtc,
+        source_timezone: sourceTimezone,
+      }),
+    }),
 }
 
 export const listsApi = {

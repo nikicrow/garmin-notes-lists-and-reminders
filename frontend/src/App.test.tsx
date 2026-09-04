@@ -23,6 +23,206 @@ afterEach(() => {
 })
 
 describe('App', () => {
+  it('submits a reminder in the selected timezone', async () => {
+    window.history.replaceState(null, '', '/reminders')
+    const created = {
+      id: '11111111-1111-1111-1111-111111111111',
+      title: 'Dentist',
+      detail: 'Bring paperwork',
+      due_at_utc: '2027-10-01T04:30:00Z',
+      source_timezone: 'Australia/Brisbane',
+      is_urgent: true,
+      status: 'pending',
+      created_at: '2026-09-04T10:00:00Z',
+      updated_at: '2026-09-04T10:00:00Z',
+      completed_at: null,
+      cancelled_at: null,
+    }
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ username: 'niki' }))
+      .mockResolvedValueOnce(jsonResponse([]))
+      .mockResolvedValueOnce(jsonResponse(created, 201))
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<App />)
+
+    fireEvent.change(await screen.findByLabelText('Reminder title'), {
+      target: { value: 'Dentist' },
+    })
+    fireEvent.change(screen.getByLabelText('Details'), {
+      target: { value: 'Bring paperwork' },
+    })
+    fireEvent.change(screen.getByLabelText('Due date and time'), {
+      target: { value: '2027-10-01T14:30' },
+    })
+    fireEvent.change(screen.getByLabelText('Timezone'), {
+      target: { value: 'Australia/Brisbane' },
+    })
+    fireEvent.click(screen.getByLabelText('Urgent'))
+    fireEvent.click(screen.getByRole('button', { name: 'Add reminder' }))
+
+    expect(await screen.findByText('Dentist')).toBeInTheDocument()
+    expect(
+      screen.getByText('Urgent', { selector: 'strong' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText('Notifications are not delivered in Phase 1.'),
+    ).toBeInTheDocument()
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      '/api/v1/reminders',
+      expect.objectContaining({
+        body: JSON.stringify({
+          title: 'Dentist',
+          detail: 'Bring paperwork',
+          due_at_utc: '2027-10-01T04:30:00.000Z',
+          source_timezone: 'Australia/Brisbane',
+          is_urgent: true,
+        }),
+        credentials: 'include',
+        method: 'POST',
+      }),
+    )
+  })
+
+  it('edits, snoozes, reschedules, completes, and cancels reminders', async () => {
+    window.history.replaceState(null, '', '/reminders')
+    const appointment = {
+      id: '11111111-1111-1111-1111-111111111111',
+      title: 'Appointment',
+      detail: null,
+      due_at_utc: '2027-10-01T04:30:00Z',
+      source_timezone: 'Australia/Brisbane',
+      is_urgent: false,
+      status: 'pending',
+      created_at: '2026-09-04T10:00:00Z',
+      updated_at: '2026-09-04T10:00:00Z',
+      completed_at: null,
+      cancelled_at: null,
+    }
+    const cancelMe = {
+      ...appointment,
+      id: '22222222-2222-2222-2222-222222222222',
+      title: 'Cancel me',
+    }
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ username: 'niki' }))
+      .mockResolvedValueOnce(jsonResponse([appointment, cancelMe]))
+      .mockResolvedValueOnce(
+        jsonResponse({ ...appointment, title: 'Dentist', is_urgent: true }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          ...appointment,
+          title: 'Dentist',
+          is_urgent: true,
+          due_at_utc: '2027-10-01T04:45:00Z',
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          ...appointment,
+          title: 'Dentist',
+          is_urgent: true,
+          due_at_utc: '2027-10-02T05:00:00Z',
+          source_timezone: 'Australia/Sydney',
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          ...appointment,
+          title: 'Dentist',
+          is_urgent: true,
+          status: 'completed',
+          completed_at: '2027-10-01T00:00:00Z',
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          ...cancelMe,
+          status: 'cancelled',
+          cancelled_at: '2027-10-01T00:00:00Z',
+        }),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<App />)
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Edit Appointment' }),
+    )
+    fireEvent.change(screen.getByLabelText('Edit reminder title'), {
+      target: { value: 'Dentist' },
+    })
+    fireEvent.click(screen.getByLabelText('Edit urgent'))
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+    expect(await screen.findByText('Dentist')).toBeInTheDocument()
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      `/api/v1/reminders/${appointment.id}`,
+      expect.objectContaining({
+        body: JSON.stringify({
+          title: 'Dentist',
+          detail: null,
+          is_urgent: true,
+        }),
+        method: 'PATCH',
+      }),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Snooze Dentist' }))
+    fireEvent.change(screen.getByLabelText('Snooze until'), {
+      target: { value: '2027-10-01T14:45' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm snooze' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4))
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      `/api/v1/reminders/${appointment.id}/snooze`,
+      expect.objectContaining({
+        body: JSON.stringify({ due_at_utc: '2027-10-01T04:45:00.000Z' }),
+        method: 'POST',
+      }),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reschedule Dentist' }))
+    fireEvent.change(screen.getByLabelText('New due date and time'), {
+      target: { value: '2027-10-02T15:00' },
+    })
+    fireEvent.change(screen.getByLabelText('New timezone'), {
+      target: { value: 'Australia/Sydney' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm reschedule' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5))
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      5,
+      `/api/v1/reminders/${appointment.id}/reschedule`,
+      expect.objectContaining({
+        body: JSON.stringify({
+          due_at_utc: '2027-10-02T05:00:00.000Z',
+          source_timezone: 'Australia/Sydney',
+        }),
+        method: 'POST',
+      }),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Complete Dentist' }))
+    expect(await screen.findByText('completed')).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Edit Dentist' }),
+    ).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel Cancel me' }))
+    expect(await screen.findByText('cancelled')).toBeInTheDocument()
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      7,
+      `/api/v1/reminders/${cancelMe.id}/cancel`,
+      expect.objectContaining({ method: 'POST' }),
+    )
+  })
+
   it('manages a shared shopping list and its items', async () => {
     window.history.replaceState(null, '', '/lists')
     const ownerId = '11111111-1111-1111-1111-111111111111'
@@ -315,7 +515,9 @@ describe('App', () => {
     expect(
       await screen.findByRole('heading', { name: 'Reminders' }),
     ).toBeInTheDocument()
-    expect(screen.getByText('No upcoming reminders.')).toBeInTheDocument()
+    expect(
+      await screen.findByText('No upcoming reminders.'),
+    ).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('link', { name: 'Lists' }))
 
