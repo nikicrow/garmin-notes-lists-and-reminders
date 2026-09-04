@@ -2,6 +2,7 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -105,3 +106,25 @@ class ListItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     completed_by_user_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), default=None, index=True
     )
+
+
+class Reminder(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "reminders"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'completed', 'cancelled')",
+            name="status_valid",
+        ),
+    )
+
+    creator_user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    title: Mapped[str] = mapped_column(String(200))
+    detail: Mapped[str | None] = mapped_column(Text, default=None)
+    due_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    source_timezone: Mapped[str] = mapped_column(String(100))
+    is_urgent: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)

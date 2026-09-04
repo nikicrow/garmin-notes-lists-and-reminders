@@ -31,7 +31,7 @@ def test_migrations_upgrade_clean_postgresql_database(isolated_database_url: str
 
     revision, tables = asyncio.run(read_migration_state())
 
-    assert revision == "0005_list_items"
+    assert revision == "0006_one_time_reminders"
     assert {
         "users",
         "user_sessions",
@@ -39,4 +39,5 @@ def test_migrations_upgrade_clean_postgresql_database(isolated_database_url: str
         "lists",
         "resource_memberships",
         "list_items",
+        "reminders",
     } <= tables
