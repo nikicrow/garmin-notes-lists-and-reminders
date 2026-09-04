@@ -5,6 +5,7 @@ description = "Tuck private application API"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.116,<1",
+  "pydantic-settings>=2.10,<3",
   "uvicorn[standard]>=0.35,<1",
 ]
 
@@ -39,3 +40,4 @@ select = ["E", "F", "I", "UP", "B"]
 python_version = "3.11"
 strict = true
 files = ["src", "tests"]
+plugins = ["pydantic.mypy"]
