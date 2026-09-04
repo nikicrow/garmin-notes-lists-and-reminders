@@ -23,6 +23,134 @@ afterEach(() => {
 })
 
 describe('App', () => {
+  it('manages a shared shopping list and its items', async () => {
+    window.history.replaceState(null, '', '/lists')
+    const ownerId = '11111111-1111-1111-1111-111111111111'
+    const memberId = '22222222-2222-2222-2222-222222222222'
+    const list = {
+      id: '33333333-3333-3333-3333-333333333333',
+      owner_user_id: ownerId,
+      title: 'Shopping',
+      shared_user_ids: [],
+      created_at: '2026-09-04T10:00:00Z',
+      updated_at: '2026-09-04T10:00:00Z',
+      archived_at: null,
+    }
+    const milk = {
+      id: '44444444-4444-4444-4444-444444444444',
+      list_id: list.id,
+      body: 'Milk',
+      position: 0,
+      created_by_user_id: ownerId,
+      completed_at: null,
+      completed_by_user_id: null,
+      created_at: '2026-09-04T10:01:00Z',
+      updated_at: '2026-09-04T10:01:00Z',
+    }
+    const bread = {
+      ...milk,
+      id: '55555555-5555-5555-5555-555555555555',
+      body: 'Bread',
+      position: 1,
+    }
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ username: 'niki' }))
+      .mockResolvedValueOnce(jsonResponse([list]))
+      .mockResolvedValueOnce(jsonResponse([milk, bread]))
+      .mockResolvedValueOnce(
+        jsonResponse({ ...bread, completed_at: '2026-09-04T10:02:00Z' }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ ...list, shared_user_ids: [memberId] }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ ...list, shared_user_ids: [] }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<App />)
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Open Shopping' }),
+    )
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Bread' }))
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      `/api/v1/lists/${list.id}/items/${bread.id}`,
+      expect.objectContaining({
+        body: JSON.stringify({ is_checked: true }),
+        credentials: 'include',
+        method: 'PATCH',
+      }),
+    )
+    await waitFor(() =>
+      expect(screen.getByRole('checkbox', { name: 'Bread' })).toBeChecked(),
+    )
+
+    fireEvent.change(screen.getByLabelText('Share with user ID'), {
+      target: { value: memberId },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Share' }))
+
+    expect(await screen.findByText(memberId)).toBeInTheDocument()
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      5,
+      `/api/v1/lists/${list.id}/members/${memberId}`,
+      expect.objectContaining({ credentials: 'include', method: 'PUT' }),
+    )
+
+    fireEvent.click(
+      screen.getByRole('button', { name: `Remove access for ${memberId}` }),
+    )
+
+    await waitFor(() =>
+      expect(screen.queryByText(memberId)).not.toBeInTheDocument(),
+    )
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      6,
+      `/api/v1/lists/${list.id}/members/${memberId}`,
+      expect.objectContaining({ credentials: 'include', method: 'DELETE' }),
+    )
+  })
+
+  it('shows permission feedback and preserves a list rename', async () => {
+    window.history.replaceState(null, '', '/lists')
+    const list = {
+      id: '33333333-3333-3333-3333-333333333333',
+      owner_user_id: '11111111-1111-1111-1111-111111111111',
+      title: 'Shared shopping',
+      shared_user_ids: ['22222222-2222-2222-2222-222222222222'],
+      created_at: '2026-09-04T10:00:00Z',
+      updated_at: '2026-09-04T10:00:00Z',
+      archived_at: null,
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse({ username: 'niki' }))
+        .mockResolvedValueOnce(jsonResponse([list]))
+        .mockResolvedValueOnce(
+          jsonResponse({ detail: 'Only the owner can rename this list' }, 403),
+        ),
+    )
+
+    render(<App />)
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Rename Shared shopping' }),
+    )
+    const rename = screen.getByLabelText('List name')
+    fireEvent.change(rename, { target: { value: 'Weekly groceries' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save name' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Only the owner can rename this list',
+    )
+    expect(rename).toHaveValue('Weekly groceries')
+    expect(screen.getByRole('button', { name: 'Save name' })).toBeEnabled()
+  })
+
   it('creates, edits, and archives a note', async () => {
     const draft = {
       id: '11111111-1111-1111-1111-111111111111',
@@ -176,7 +304,10 @@ describe('App', () => {
     window.history.replaceState(null, '', '/reminders')
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue(jsonResponse({ username: 'niki' })),
+      vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse({ username: 'niki' }))
+        .mockResolvedValueOnce(jsonResponse([])),
     )
 
     render(<App />)
@@ -189,7 +320,7 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('link', { name: 'Lists' }))
 
     expect(screen.getByRole('heading', { name: 'Lists' })).toBeInTheDocument()
-    expect(screen.getByText('No lists yet.')).toBeInTheDocument()
+    expect(await screen.findByText('No lists yet.')).toBeInTheDocument()
     expect(window.location.pathname).toBe('/lists')
   })
 

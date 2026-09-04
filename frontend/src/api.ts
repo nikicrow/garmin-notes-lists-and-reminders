@@ -10,6 +10,28 @@ export interface Note {
   archived_at: string | null
 }
 
+export interface TuckList {
+  id: string
+  owner_user_id: string
+  title: string
+  shared_user_ids: string[]
+  created_at: string
+  updated_at: string
+  archived_at: string | null
+}
+
+export interface ListItem {
+  id: string
+  list_id: string
+  body: string
+  position: number
+  created_by_user_id: string
+  completed_at: string | null
+  completed_by_user_id: string | null
+  created_at: string
+  updated_at: string
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -75,4 +97,57 @@ export const notesApi = {
     }),
   archive: (id: string) =>
     request<Note>(`/api/v1/notes/${id}`, { method: 'DELETE' }),
+}
+
+export const listsApi = {
+  list: () => request<TuckList[]>('/api/v1/lists'),
+  create: (title: string) =>
+    request<TuckList>('/api/v1/lists', {
+      method: 'POST',
+      body: JSON.stringify({ title }),
+    }),
+  rename: (id: string, title: string) =>
+    request<TuckList>(`/api/v1/lists/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ title }),
+    }),
+  archive: (id: string) =>
+    request<TuckList>(`/api/v1/lists/${id}`, { method: 'DELETE' }),
+  share: (id: string, memberId: string) =>
+    request<TuckList>(`/api/v1/lists/${id}/members/${memberId}`, {
+      method: 'PUT',
+    }),
+  unshare: (id: string, memberId: string) =>
+    request<TuckList>(`/api/v1/lists/${id}/members/${memberId}`, {
+      method: 'DELETE',
+    }),
+  listItems: (id: string) => request<ListItem[]>(`/api/v1/lists/${id}/items`),
+  addItem: (id: string, body: string) =>
+    request<ListItem>(`/api/v1/lists/${id}/items`, {
+      method: 'POST',
+      body: JSON.stringify({ body }),
+    }),
+  editItem: (
+    listId: string,
+    itemId: string,
+    changes: { body?: string; is_checked?: boolean },
+  ) =>
+    request<ListItem>(`/api/v1/lists/${listId}/items/${itemId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(changes),
+    }),
+  deleteItem: (listId: string, itemId: string) =>
+    request<void>(`/api/v1/lists/${listId}/items/${itemId}`, {
+      method: 'DELETE',
+    }),
+  reorderItems: (listId: string, items: ListItem[]) =>
+    request<ListItem[]>(`/api/v1/lists/${listId}/items/reorder`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        positions: items.map((item, position) => ({
+          item_id: item.id,
+          position,
+        })),
+      }),
+    }),
 }

@@ -1,6 +1,15 @@
 import { useEffect, useState } from 'react'
 
-import { ApiError, authApi, notesApi, type Note, type User } from './api'
+import {
+  ApiError,
+  authApi,
+  listsApi,
+  notesApi,
+  type ListItem,
+  type Note,
+  type TuckList,
+  type User,
+} from './api'
 
 type AuthState =
   | { status: 'checking' }
@@ -224,6 +233,501 @@ function NotesPage() {
   )
 }
 
+function ListsPage() {
+  const [lists, setLists] = useState<TuckList[] | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [items, setItems] = useState<ListItem[] | null>(null)
+  const [newTitle, setNewTitle] = useState('')
+  const [newItem, setNewItem] = useState('')
+  const [memberId, setMemberId] = useState('')
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [renameTitle, setRenameTitle] = useState('')
+  const [editingItemId, setEditingItemId] = useState<string | null>(null)
+  const [editItemBody, setEditItemBody] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let active = true
+    void listsApi
+      .list()
+      .then((loaded) => {
+        if (active) setLists(loaded)
+      })
+      .catch((caught: unknown) => {
+        if (active) {
+          setLists([])
+          setError(messageFor(caught))
+        }
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  const selectedList = lists?.find((list) => list.id === selectedId) ?? null
+
+  function replaceList(updated: TuckList) {
+    setLists(
+      (current) =>
+        current?.map((list) => (list.id === updated.id ? updated : list)) ?? [],
+    )
+  }
+
+  async function createList(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setSubmitting(true)
+    setError(null)
+    try {
+      const created = await listsApi.create(newTitle)
+      setLists((current) => [created, ...(current ?? [])])
+      setNewTitle('')
+    } catch (caught) {
+      setError(messageFor(caught))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function openList(list: TuckList) {
+    setSelectedId(list.id)
+    setItems(null)
+    setError(null)
+    try {
+      setItems(await listsApi.listItems(list.id))
+    } catch (caught) {
+      setItems([])
+      setError(messageFor(caught))
+    }
+  }
+
+  async function renameList(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (renamingId === null) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      replaceList(await listsApi.rename(renamingId, renameTitle))
+      setRenamingId(null)
+    } catch (caught) {
+      setError(messageFor(caught))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function archiveList(list: TuckList) {
+    setSubmitting(true)
+    setError(null)
+    try {
+      await listsApi.archive(list.id)
+      setLists(
+        (current) => current?.filter((entry) => entry.id !== list.id) ?? [],
+      )
+      if (selectedId === list.id) {
+        setSelectedId(null)
+        setItems(null)
+      }
+    } catch (caught) {
+      setError(messageFor(caught))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function share(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (selectedList === null) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      replaceList(await listsApi.share(selectedList.id, memberId))
+      setMemberId('')
+    } catch (caught) {
+      setError(messageFor(caught))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function unshare(removedMemberId: string) {
+    if (selectedList === null) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      replaceList(await listsApi.unshare(selectedList.id, removedMemberId))
+    } catch (caught) {
+      setError(messageFor(caught))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function addItem(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (selectedList === null) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      const created = await listsApi.addItem(selectedList.id, newItem)
+      setItems((current) => [...(current ?? []), created])
+      setNewItem('')
+    } catch (caught) {
+      setError(messageFor(caught))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function updateItem(
+    item: ListItem,
+    changes: { body?: string; is_checked?: boolean },
+  ) {
+    if (selectedList === null) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      const updated = await listsApi.editItem(selectedList.id, item.id, changes)
+      setItems(
+        (current) =>
+          current?.map((entry) =>
+            entry.id === updated.id ? updated : entry,
+          ) ?? [],
+      )
+      if (changes.body !== undefined) setEditingItemId(null)
+    } catch (caught) {
+      setError(messageFor(caught))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function deleteItem(item: ListItem) {
+    if (selectedList === null) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      await listsApi.deleteItem(selectedList.id, item.id)
+      setItems(
+        (current) =>
+          current
+            ?.filter((entry) => entry.id !== item.id)
+            .map((entry, position) => ({ ...entry, position })) ?? [],
+      )
+    } catch (caught) {
+      setError(messageFor(caught))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function moveItem(index: number, offset: -1 | 1) {
+    if (selectedList === null || items === null) return
+    const destination = index + offset
+    if (destination < 0 || destination >= items.length) return
+    const reordered = [...items]
+    ;[reordered[index], reordered[destination]] = [
+      reordered[destination],
+      reordered[index],
+    ]
+    setSubmitting(true)
+    setError(null)
+    try {
+      setItems(await listsApi.reorderItems(selectedList.id, reordered))
+    } catch (caught) {
+      setError(messageFor(caught))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <section className="lists-page" aria-labelledby="lists-heading">
+      <div className="page-heading">
+        <p className="eyebrow">Keep it together</p>
+        <h1 id="lists-heading">Lists</h1>
+      </div>
+      <form
+        className="inline-composer"
+        onSubmit={(event) => void createList(event)}
+      >
+        <label htmlFor="new-list">New list</label>
+        <div>
+          <input
+            id="new-list"
+            onChange={(event) => setNewTitle(event.target.value)}
+            placeholder="Shopping"
+            required
+            value={newTitle}
+          />
+          <button disabled={submitting} type="submit">
+            Add list
+          </button>
+        </div>
+      </form>
+      {error === null ? null : <p role="alert">{error}</p>}
+      {lists === null ? <p role="status">Loading lists…</p> : null}
+      {lists?.length === 0 ? <p role="status">No lists yet.</p> : null}
+      {lists === null || lists.length === 0 ? null : (
+        <ul className="resource-list" aria-label="Lists">
+          {lists.map((list) => (
+            <li
+              className={selectedId === list.id ? 'selected' : ''}
+              key={list.id}
+            >
+              {renamingId === list.id ? (
+                <form
+                  className="inline-editor"
+                  onSubmit={(event) => void renameList(event)}
+                >
+                  <label htmlFor={`rename-${list.id}`}>List name</label>
+                  <input
+                    id={`rename-${list.id}`}
+                    onChange={(event) => setRenameTitle(event.target.value)}
+                    required
+                    value={renameTitle}
+                  />
+                  <div className="compact-actions">
+                    <button disabled={submitting} type="submit">
+                      Save name
+                    </button>
+                    <button
+                      className="secondary-button"
+                      onClick={() => setRenamingId(null)}
+                      type="button"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <>
+                  <h2>{list.title}</h2>
+                  <p>
+                    {list.shared_user_ids.length === 0
+                      ? 'Private'
+                      : `Shared with ${list.shared_user_ids.length}`}
+                  </p>
+                  <div className="compact-actions">
+                    <button
+                      aria-label={`Open ${list.title}`}
+                      className="secondary-button"
+                      onClick={() => void openList(list)}
+                      type="button"
+                    >
+                      Open
+                    </button>
+                    <button
+                      aria-label={`Rename ${list.title}`}
+                      className="secondary-button"
+                      onClick={() => {
+                        setRenamingId(list.id)
+                        setRenameTitle(list.title)
+                      }}
+                      type="button"
+                    >
+                      Rename
+                    </button>
+                    <button
+                      aria-label={`Archive ${list.title}`}
+                      className="danger-button"
+                      disabled={submitting}
+                      onClick={() => void archiveList(list)}
+                      type="button"
+                    >
+                      Archive
+                    </button>
+                  </div>
+                </>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {selectedList === null ? null : (
+        <section
+          className="list-detail"
+          aria-labelledby="selected-list-heading"
+        >
+          <div className="detail-heading">
+            <div>
+              <p className="eyebrow">Open list</p>
+              <h2 id="selected-list-heading">{selectedList.title}</h2>
+            </div>
+            <button
+              className="secondary-button"
+              onClick={() => {
+                setSelectedId(null)
+                setItems(null)
+              }}
+              type="button"
+            >
+              Close
+            </button>
+          </div>
+          <form
+            className="inline-composer"
+            onSubmit={(event) => void addItem(event)}
+          >
+            <label htmlFor="new-item">New item</label>
+            <div>
+              <input
+                id="new-item"
+                onChange={(event) => setNewItem(event.target.value)}
+                required
+                value={newItem}
+              />
+              <button disabled={submitting} type="submit">
+                Add item
+              </button>
+            </div>
+          </form>
+          {items === null ? <p role="status">Loading items…</p> : null}
+          {items?.length === 0 ? <p role="status">No items yet.</p> : null}
+          {items === null || items.length === 0 ? null : (
+            <ul
+              className="item-list"
+              aria-label={`${selectedList.title} items`}
+            >
+              {items.map((item, index) => (
+                <li key={item.id}>
+                  {editingItemId === item.id ? (
+                    <form
+                      className="inline-editor"
+                      onSubmit={(event) => {
+                        event.preventDefault()
+                        void updateItem(item, { body: editItemBody })
+                      }}
+                    >
+                      <label htmlFor={`edit-item-${item.id}`}>Edit item</label>
+                      <input
+                        id={`edit-item-${item.id}`}
+                        onChange={(event) =>
+                          setEditItemBody(event.target.value)
+                        }
+                        required
+                        value={editItemBody}
+                      />
+                      <div className="compact-actions">
+                        <button disabled={submitting} type="submit">
+                          Save item
+                        </button>
+                        <button
+                          className="secondary-button"
+                          onClick={() => setEditingItemId(null)}
+                          type="button"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </form>
+                  ) : (
+                    <>
+                      <label className="check-label">
+                        <input
+                          checked={item.completed_at !== null}
+                          disabled={submitting}
+                          onChange={() =>
+                            void updateItem(item, {
+                              is_checked: item.completed_at === null,
+                            })
+                          }
+                          type="checkbox"
+                        />
+                        <span>{item.body}</span>
+                      </label>
+                      <div className="compact-actions">
+                        <button
+                          aria-label={`Move ${item.body} up`}
+                          className="icon-button"
+                          disabled={submitting || index === 0}
+                          onClick={() => void moveItem(index, -1)}
+                          type="button"
+                        >
+                          ↑
+                        </button>
+                        <button
+                          aria-label={`Move ${item.body} down`}
+                          className="icon-button"
+                          disabled={submitting || index === items.length - 1}
+                          onClick={() => void moveItem(index, 1)}
+                          type="button"
+                        >
+                          ↓
+                        </button>
+                        <button
+                          aria-label={`Edit ${item.body}`}
+                          className="secondary-button"
+                          onClick={() => {
+                            setEditingItemId(item.id)
+                            setEditItemBody(item.body)
+                          }}
+                          type="button"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          aria-label={`Delete ${item.body}`}
+                          className="danger-button"
+                          disabled={submitting}
+                          onClick={() => void deleteItem(item)}
+                          type="button"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+          <section className="sharing" aria-labelledby="sharing-heading">
+            <h3 id="sharing-heading">Sharing</h3>
+            <form
+              className="inline-composer"
+              onSubmit={(event) => void share(event)}
+            >
+              <label htmlFor="member-id">Share with user ID</label>
+              <div>
+                <input
+                  id="member-id"
+                  onChange={(event) => setMemberId(event.target.value)}
+                  required
+                  value={memberId}
+                />
+                <button disabled={submitting} type="submit">
+                  Share
+                </button>
+              </div>
+            </form>
+            {selectedList.shared_user_ids.length === 0 ? (
+              <p>Not shared.</p>
+            ) : (
+              <ul className="member-list">
+                {selectedList.shared_user_ids.map((id) => (
+                  <li key={id}>
+                    <code>{id}</code>
+                    <button
+                      aria-label={`Remove access for ${id}`}
+                      className="danger-button"
+                      disabled={submitting}
+                      onClick={() => void unshare(id)}
+                      type="button"
+                    >
+                      Remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </section>
+      )}
+    </section>
+  )
+}
+
 const pages = {
   '/notes': { title: 'Notes', empty: 'No notes yet.' },
   '/lists': { title: 'Lists', empty: 'No lists yet.' },
@@ -323,6 +827,8 @@ function AuthenticatedShell({
         {error === null ? null : <p role="alert">{error}</p>}
         {path === '/notes' ? (
           <NotesPage />
+        ) : path === '/lists' ? (
+          <ListsPage />
         ) : (
           <>
             <h1>{page.title}</h1>
