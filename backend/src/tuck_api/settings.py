@@ -1,3 +1,4 @@
+from functools import lru_cache
 from typing import Literal
 
 from pydantic import Field, PostgresDsn, field_validator
@@ -20,3 +21,8 @@ class Settings(BaseSettings):
         if value.scheme != "postgresql+asyncpg":
             raise ValueError("database URL must use the postgresql+asyncpg scheme")
         return value
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

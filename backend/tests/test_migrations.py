@@ -17,13 +17,19 @@ def test_migrations_upgrade_clean_postgresql_database(isolated_database_url: str
 
     command.upgrade(config, "head")
 
-    async def read_revision() -> str | None:
+    async def read_migration_state() -> tuple[str | None, set[str]]:
         engine = create_engine(isolated_database_url)
         try:
             async with engine.connect() as connection:
                 revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-                return cast(str | None, revision)
+                rows = await connection.execute(
+                    text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+                )
+                return cast(str | None, revision), set(rows.scalars())
         finally:
             await engine.dispose()
 
-    assert asyncio.run(read_revision()) == "0001_initial_infrastructure"
+    revision, tables = asyncio.run(read_migration_state())
+
+    assert revision == "0002_user_accounts"
+    assert {"users", "user_sessions"} <= tables

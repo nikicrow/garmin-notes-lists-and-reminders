@@ -1,21 +1,17 @@
-from functools import lru_cache
-
 from fastapi import FastAPI, HTTPException
 from pydantic import ValidationError
 
-from tuck_api.settings import Settings
+from tuck_api.auth import AuthenticationMiddleware, auth_router
+from tuck_api.settings import get_settings as get_settings
 
 app = FastAPI(title="Tuck API")
+app.add_middleware(AuthenticationMiddleware)
+app.include_router(auth_router)
 
 
 @app.get("/api/v1/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
-
-
-@lru_cache
-def get_settings() -> Settings:
-    return Settings()
 
 
 @app.get("/api/v1/ready")

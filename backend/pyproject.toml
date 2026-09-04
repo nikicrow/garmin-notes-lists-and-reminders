@@ -12,6 +12,9 @@ dependencies = [
   "uvicorn[standard]>=0.35,<1",
 ]
 
+[project.scripts]
+tuck-bootstrap-user = "tuck_api.bootstrap_user:main"
+
 [dependency-groups]
 dev = [
   "httpx>=0.28,<1",
