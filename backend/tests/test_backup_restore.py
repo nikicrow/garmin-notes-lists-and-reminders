@@ -1,13 +1,8 @@
 """Tests for database backup and restore scripts."""
 
 import os
-import shutil
 import subprocess
 import sys
-import tempfile
-
-import pytest
-
 
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
