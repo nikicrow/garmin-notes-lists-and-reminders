@@ -63,6 +63,223 @@ The system must:
 - Android AppFunctions are an on-device MCP-like integration mechanism, but Gemini integration is still a private preview and requires Android 16 or later.[3]
 - Therefore direct Gemini-to-custom-app voice capture is a **feasibility-gated adapter**, not a Phase 1 assumption.
 
+## Phase 1 implementation guide
+
+Phase 1 is a conventional three-tier application: a React PWA, a FastAPI API,
+and PostgreSQL. The AI capture, notification worker, and public integration
+components described later in this document are not part of the Phase 1
+runtime.
+
+### Code map
+
+```mermaid
+flowchart LR
+    subgraph Browser[Browser and installed PWA]
+        APP["App.tsx<br/>screens and local UI state"]
+        CLIENT["api.ts<br/>typed HTTP client"]
+        SW["sw.js<br/>static asset cache"]
+        APP --> CLIENT
+        SW -. caches app shell .-> APP
+    end
+
+    subgraph Backend[FastAPI backend]
+        MAIN["main.py<br/>app and router composition"]
+        AUTH["auth.py<br/>cookie sessions and middleware"]
+        NOTES["notes.py<br/>private note operations"]
+        LISTS["lists.py<br/>sharing and ordered items"]
+        REMINDERS["reminders.py<br/>one-time reminder lifecycle"]
+        DB["db.py<br/>async transaction scope"]
+        MODELS["models.py<br/>ORM mappings"]
+
+        MAIN --> AUTH
+        MAIN --> NOTES
+        MAIN --> LISTS
+        MAIN --> REMINDERS
+        AUTH --> DB
+        NOTES --> DB
+        LISTS --> DB
+        REMINDERS --> DB
+        DB --> MODELS
+    end
+
+    subgraph Schema[Database definition]
+        CURRENT["schema/__init__.py<br/>current metadata"]
+        SNAPSHOT["schema/phase1.py<br/>immutable Phase 1 tables"]
+        MIGRATIONS["migrations/versions<br/>Alembic revisions 0001-0006"]
+        SNAPSHOT --> CURRENT
+        SNAPSHOT --> MIGRATIONS
+    end
+
+    CLIENT -->|same-origin /api/v1 requests| MAIN
+    MODELS --> CURRENT
+    MIGRATIONS --> POSTGRES[(PostgreSQL)]
+    MODELS --> POSTGRES
+```
+
+`frontend/src/App.tsx` contains the authentication shell and the Notes, Lists,
+and Reminders screens. `frontend/src/api.ts` is the browser's single HTTP
+boundary: it serialises JSON, includes the session cookie, types returned data
+with TypeScript interfaces, and turns failed responses into `ApiError` values.
+`frontend/src/main.tsx` registers the service worker only in production builds.
+
+`backend/src/tuck_api/main.py` assembles the API from focused domain routers.
+Each route receives an async SQLAlchemy session from `db.py`; the session scope
+commits successful requests and rolls back exceptions. ORM classes in
+`models.py` map to the canonical table metadata in `schema/`. Alembic revisions
+reuse the immutable Phase 1 snapshot so a later ORM change cannot rewrite the
+meaning of an existing migration.
+
+### Authenticated request lifecycle
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant UI as React screen
+    participant Client as api.ts
+    participant Web as nginx
+    participant Auth as AuthenticationMiddleware
+    participant SessionDB as Auth DB transaction
+    participant Route as Domain route
+    participant DataDB as Route DB transaction
+    participant PG as PostgreSQL
+
+    User->>UI: Create, edit, archive, or complete an item
+    UI->>Client: Call typed API function
+    Client->>Web: /api/v1 request with secure cookie
+    Web->>Auth: Proxy request to FastAPI
+    Auth->>SessionDB: Hash cookie token and load active session
+    SessionDB->>PG: SELECT user and unexpired session
+    PG-->>SessionDB: Authenticated user
+    SessionDB-->>Auth: Attach user to request.state
+    Auth->>Route: Continue to notes, lists, or reminders router
+    Route->>DataDB: Validate payload and authorise resource access
+    DataDB->>PG: Read or write in one transaction
+    PG-->>DataDB: Persisted state
+    DataDB-->>Route: Commit on successful scope exit
+    Route-->>Client: Typed JSON response
+    Client-->>UI: Update local screen state
+    UI-->>User: Show committed result
+```
+
+Login is the exception to this sequence. `/api/v1/auth/login` is public: the API
+normalises the username, verifies the password, stores only a SHA-256 hash of a
+random session token, and returns the raw token in a `Secure`, `HttpOnly`,
+`SameSite=Strict` cookie. Subsequent protected requests resolve the user from
+that cookie. Logout revokes the stored session and deletes the cookie.
+
+### Phase 1 data model
+
+```mermaid
+erDiagram
+    USERS ||--o{ USER_SESSIONS : authenticates_with
+    USERS ||--o{ NOTES : owns
+    USERS ||--o{ LISTS : owns
+    USERS ||--o{ RESOURCE_MEMBERSHIPS : joins
+    LISTS ||--o{ RESOURCE_MEMBERSHIPS : grants_access_through
+    LISTS ||--o{ LIST_ITEMS : contains
+    USERS ||--o{ LIST_ITEMS : creates
+    USERS o|--o{ LIST_ITEMS : completes
+    USERS ||--o{ REMINDERS : creates
+
+    USERS {
+        uuid id PK
+        string username UK
+        text password_hash
+    }
+    USER_SESSIONS {
+        uuid id PK
+        uuid user_id FK
+        string token_hash UK
+        timestamptz expires_at
+        timestamptz revoked_at
+    }
+    NOTES {
+        uuid id PK
+        uuid owner_user_id FK
+        text body
+        timestamptz archived_at
+    }
+    LISTS {
+        uuid id PK
+        uuid owner_user_id FK
+        string title
+        timestamptz archived_at
+    }
+    RESOURCE_MEMBERSHIPS {
+        uuid id PK
+        uuid list_id FK
+        uuid user_id FK
+    }
+    LIST_ITEMS {
+        uuid id PK
+        uuid list_id FK
+        uuid created_by_user_id FK
+        uuid completed_by_user_id FK
+        int position
+        text body
+    }
+    REMINDERS {
+        uuid id PK
+        uuid creator_user_id FK
+        string title
+        timestamptz due_at_utc
+        string source_timezone
+        boolean is_urgent
+        string status
+    }
+```
+
+Notes are private to their owner. Lists are visible to their owner and to users
+named by `resource_memberships`; authorised members can also operate on list
+items. Item positions are unique within a list and are reordered
+transactionally. One-time reminders belong to their creator and move through
+`pending`, `completed`, or `cancelled` states. Archive and lifecycle timestamps
+preserve history instead of hard-deleting notes, lists, or reminders.
+
+### Runtime and delivery
+
+```mermaid
+flowchart TB
+    DEVICE[Phone or laptop] -->|tailnet HTTPS| SERVE[Tailscale Serve]
+
+    subgraph Host["fedora-1: Docker Compose"]
+        WEB["web container<br/>nginx and built PWA"]
+        API["api container<br/>Alembic then Uvicorn"]
+        PG[("postgres container<br/>persistent volume")]
+        WEB -->|proxy /api/*| API
+        API -->|async SQLAlchemy| PG
+    end
+
+    SERVE -->|localhost web port| WEB
+    WEB -->|static routes and SPA fallback| DEVICE
+
+    subgraph GitHub[GitHub Actions]
+        CHANGE[Pull request or main push] --> CI[Format, lint, typecheck, tests, build]
+        CI --> CI_IMAGES[Build images as CI validation]
+        CI -->|main only, CI passed| RUNNER[Self-hosted production runner]
+        RUNNER --> VALIDATE[Validate production Compose configuration]
+        VALIDATE --> PROD_IMAGES[Rebuild production images with pull]
+        PROD_IMAGES --> DEPLOY[Start services and run API migrations]
+        DEPLOY --> VERIFY[Check API readiness and web health]
+    end
+
+    RUNNER -. deploys on .-> Host
+```
+
+Compose binds PostgreSQL, API, and web ports to localhost. The web container is
+the user-facing entry point: nginx serves the compiled PWA, falls back to
+`index.html` for client-side navigation, and proxies `/api/` to FastAPI over the
+Compose network. The service worker caches only the app shell and static assets;
+it deliberately bypasses `/api/` and all non-GET requests so application data
+always comes from the server.
+
+The API container waits for PostgreSQL, applies `alembic upgrade head`, and then
+starts Uvicorn. GitHub Actions runs the full quality suite and builds both images
+for every pull request. Those CI images are validation builds, not deployment
+artifacts. A successful `main` run continues on the labelled self-hosted runner,
+validates the production environment file, rebuilds the images, starts Compose,
+and verifies the API readiness and web endpoints.
+
 ## System context
 
 ```mermaid
@@ -889,7 +1106,7 @@ PostgreSQL on `fedora-1` is the application database and scheduling source of tr
 
 ### Phase 1 — Useful PWA without AI integration
 
-Implement accounts, manual notes, private/shared lists, list items, one-time reminders, responsive UI, migrations/backups, and private Tailscale deployment.
+Provides accounts, manual notes, private/shared lists, list items, one-time reminders, responsive UI, migrations/backups, and private Tailscale deployment.
 
 ### Phase 2 — Reliable notifications and sharing
 
