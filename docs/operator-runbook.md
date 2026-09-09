@@ -32,7 +32,8 @@ All three are defined in `compose.yaml`. The repo root `compose.yaml` is the sin
 These must be set before starting services. They are NOT in the repository:
 
 - `POSTGRES_PASSWORD` — PostgreSQL superuser password
-- `TUCK_SECRET_KEY` — application secret key
+- `TUCK_COMPOSE_DATABASE_URL` — complete URL-encoded asyncpg DSN using `postgres:5432`
+- `TUCK_ENVIRONMENT=production`
 - `POSTGRES_USER`, `POSTGRES_DB` — usually left at defaults (`tuck`)
 - `POSTGRES_PORT` — usually left at default (`5432`)
 - `API_PORT` — internal API port (default `8000`)

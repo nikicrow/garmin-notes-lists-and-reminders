@@ -8,8 +8,9 @@ Create Date: 2026-09-04
 
 from collections.abc import Sequence
 
-import sqlalchemy as sa
 from alembic import op
+
+from tuck_api.schema.phase1 import user_sessions, users
 
 revision: str = "0002_user_accounts"
 down_revision: str | Sequence[str] | None = "0001_initial_infrastructure"
@@ -19,60 +20,30 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     op.create_table(
-        "users",
-        sa.Column("username", sa.String(length=100), nullable=False),
-        sa.Column("password_hash", sa.Text(), nullable=False),
-        sa.Column("id", sa.Uuid(), nullable=False),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
-            nullable=False,
-        ),
-        sa.Column(
-            "updated_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
-            nullable=False,
-        ),
-        sa.PrimaryKeyConstraint("id", name=op.f("pk_users")),
+        users.name,
+        *users.columns,
+        *users.constraints,
     )
-    op.create_index(op.f("ix_users_username"), "users", ["username"], unique=True)
+    op.create_index(op.f("ix_users_username"), users.name, ["username"], unique=True)
 
     op.create_table(
-        "user_sessions",
-        sa.Column("user_id", sa.Uuid(), nullable=False),
-        sa.Column("token_hash", sa.String(length=64), nullable=False),
-        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("id", sa.Uuid(), nullable=False),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
-            nullable=False,
-        ),
-        sa.Column(
-            "updated_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
-            nullable=False,
-        ),
-        sa.ForeignKeyConstraint(
-            ["user_id"],
-            ["users.id"],
-            name=op.f("fk_user_sessions_user_id_users"),
-            ondelete="CASCADE",
-        ),
-        sa.PrimaryKeyConstraint("id", name=op.f("pk_user_sessions")),
+        user_sessions.name,
+        *user_sessions.columns,
+        *user_sessions.constraints,
     )
     op.create_index(
-        op.f("ix_user_sessions_expires_at"), "user_sessions", ["expires_at"], unique=False
+        op.f("ix_user_sessions_expires_at"),
+        user_sessions.name,
+        ["expires_at"],
+        unique=False,
     )
     op.create_index(
-        op.f("ix_user_sessions_token_hash"), "user_sessions", ["token_hash"], unique=True
+        op.f("ix_user_sessions_token_hash"),
+        user_sessions.name,
+        ["token_hash"],
+        unique=True,
     )
-    op.create_index(op.f("ix_user_sessions_user_id"), "user_sessions", ["user_id"], unique=False)
+    op.create_index(op.f("ix_user_sessions_user_id"), user_sessions.name, ["user_id"], unique=False)
 
 
 def downgrade() -> None:

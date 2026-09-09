@@ -10,8 +10,8 @@
     "test:unit": "vitest run",
     "test:e2e": "playwright test",
     "lint": "eslint .",
-    "format": "prettier --write .",
-    "format:check": "prettier --check .",
+    "format": "prettier --write . ../.github/workflows ../compose.yaml ../docs/deployment.md",
+    "format:check": "prettier --check . ../.github/workflows ../compose.yaml ../docs/deployment.md",
     "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {

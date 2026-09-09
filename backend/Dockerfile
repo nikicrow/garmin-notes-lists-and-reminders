@@ -1,7 +1,7 @@
 # Stage 1: build the Python package
 FROM python:3.11-slim AS builder
 
-WORKDIR /build
+WORKDIR /app
 
 # Install build dependencies
 RUN apt-get update && \
@@ -9,11 +9,12 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Install uv for fast dependency management
-COPY backend/uv.lock backend/pyproject.toml /build/
+COPY backend/uv.lock backend/pyproject.toml ./
+COPY backend/src ./src
 RUN pip install uv
 
-# Sync dependencies
-RUN uv sync --frozen --no-dev
+# Install the application non-editably so the runtime image is self-contained.
+RUN uv sync --frozen --no-dev --no-editable
 
 # Stage 2: runtime image
 FROM python:3.11-slim
@@ -26,7 +27,7 @@ RUN apt-get update && \
 WORKDIR /app
 
 # Copy installed dependencies from builder
-COPY --from=builder /build/.venv /app/.venv
+COPY --from=builder /app/.venv /app/.venv
 
 # Copy application source
 COPY backend/src/tuck_api /app/tuck_api

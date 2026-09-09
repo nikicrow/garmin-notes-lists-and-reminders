@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import {
   ApiError,
@@ -766,6 +766,7 @@ function localTimeInTimezoneToUtc(localTime: string, timezone: string): string {
 
 function RemindersPage() {
   const [reminders, setReminders] = useState<Reminder[] | null>(null)
+  const mutationRevision = useRef(0)
   const [title, setTitle] = useState('')
   const [detail, setDetail] = useState('')
   const [dueAt, setDueAt] = useState('')
@@ -788,13 +789,16 @@ function RemindersPage() {
 
   useEffect(() => {
     let active = true
+    const requestedAtRevision = mutationRevision.current
     void remindersApi
       .list()
       .then((loaded) => {
-        if (active) setReminders(loaded)
+        if (active && mutationRevision.current === requestedAtRevision) {
+          setReminders(loaded)
+        }
       })
       .catch((caught: unknown) => {
-        if (active) {
+        if (active && mutationRevision.current === requestedAtRevision) {
           setReminders([])
           setError(messageFor(caught))
         }
@@ -816,7 +820,8 @@ function RemindersPage() {
         source_timezone: timezone,
         is_urgent: urgent,
       })
-      setReminders((current) => [...(current ?? []), created])
+      mutationRevision.current += 1
+      upsertReminder(created)
       setTitle('')
       setDetail('')
       setDueAt('')
@@ -828,13 +833,16 @@ function RemindersPage() {
     }
   }
 
-  function replaceReminder(updated: Reminder) {
-    setReminders(
-      (current) =>
-        current?.map((reminder) =>
-          reminder.id === updated.id ? updated : reminder,
-        ) ?? [],
-    )
+  function upsertReminder(updated: Reminder) {
+    setReminders((current) => {
+      const existing = current ?? []
+      if (!existing.some((reminder) => reminder.id === updated.id)) {
+        return [...existing, updated]
+      }
+      return existing.map((reminder) =>
+        reminder.id === updated.id ? updated : reminder,
+      )
+    })
   }
 
   async function saveReminder(event: React.FormEvent<HTMLFormElement>) {
@@ -843,13 +851,13 @@ function RemindersPage() {
     setSubmitting(true)
     setError(null)
     try {
-      replaceReminder(
-        await remindersApi.edit(editingId, {
-          title: editTitle,
-          detail: editDetail || null,
-          is_urgent: editUrgent,
-        }),
-      )
+      const updated = await remindersApi.edit(editingId, {
+        title: editTitle,
+        detail: editDetail || null,
+        is_urgent: editUrgent,
+      })
+      mutationRevision.current += 1
+      upsertReminder(updated)
       setEditingId(null)
     } catch (caught) {
       setError(messageFor(caught))
@@ -865,7 +873,9 @@ function RemindersPage() {
     setSubmitting(true)
     setError(null)
     try {
-      replaceReminder(await remindersApi[action](reminder.id))
+      const updated = await remindersApi[action](reminder.id)
+      mutationRevision.current += 1
+      upsertReminder(updated)
     } catch (caught) {
       setError(messageFor(caught))
     } finally {
@@ -888,7 +898,8 @@ function RemindersPage() {
               dueAtUtc,
               newTimezone,
             )
-      replaceReminder(updated)
+      mutationRevision.current += 1
+      upsertReminder(updated)
       setTimingAction(null)
       setNewDueAt('')
     } catch (caught) {

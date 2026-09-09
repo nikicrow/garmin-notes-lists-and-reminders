@@ -8,8 +8,9 @@ Create Date: 2026-09-04
 
 from collections.abc import Sequence
 
-import sqlalchemy as sa
 from alembic import op
+
+from tuck_api.schema.phase1 import lists, resource_memberships
 
 revision: str = "0004_private_shared_lists"
 down_revision: str | Sequence[str] | None = "0003_private_notes"
@@ -19,69 +20,28 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     op.create_table(
-        "lists",
-        sa.Column("owner_user_id", sa.Uuid(), nullable=False),
-        sa.Column("title", sa.String(length=200), nullable=False),
-        sa.Column("archived_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("id", sa.Uuid(), nullable=False),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
-            nullable=False,
-        ),
-        sa.Column(
-            "updated_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
-            nullable=False,
-        ),
-        sa.ForeignKeyConstraint(
-            ["owner_user_id"],
-            ["users.id"],
-            name=op.f("fk_lists_owner_user_id_users"),
-            ondelete="CASCADE",
-        ),
-        sa.PrimaryKeyConstraint("id", name=op.f("pk_lists")),
+        lists.name,
+        *lists.columns,
+        *lists.constraints,
     )
-    op.create_index(op.f("ix_lists_owner_user_id"), "lists", ["owner_user_id"], unique=False)
+    op.create_index(op.f("ix_lists_owner_user_id"), lists.name, ["owner_user_id"], unique=False)
+
     op.create_table(
-        "resource_memberships",
-        sa.Column("list_id", sa.Uuid(), nullable=False),
-        sa.Column("user_id", sa.Uuid(), nullable=False),
-        sa.Column("id", sa.Uuid(), nullable=False),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
-            nullable=False,
-        ),
-        sa.Column(
-            "updated_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
-            nullable=False,
-        ),
-        sa.ForeignKeyConstraint(
-            ["list_id"],
-            ["lists.id"],
-            name=op.f("fk_resource_memberships_list_id_lists"),
-            ondelete="CASCADE",
-        ),
-        sa.ForeignKeyConstraint(
-            ["user_id"],
-            ["users.id"],
-            name=op.f("fk_resource_memberships_user_id_users"),
-            ondelete="CASCADE",
-        ),
-        sa.PrimaryKeyConstraint("id", name=op.f("pk_resource_memberships")),
-        sa.UniqueConstraint("list_id", "user_id", name=op.f("uq_resource_memberships_list_id")),
+        resource_memberships.name,
+        *resource_memberships.columns,
+        *resource_memberships.constraints,
     )
     op.create_index(
-        op.f("ix_resource_memberships_list_id"), "resource_memberships", ["list_id"], unique=False
+        op.f("ix_resource_memberships_list_id"),
+        resource_memberships.name,
+        ["list_id"],
+        unique=False,
     )
     op.create_index(
-        op.f("ix_resource_memberships_user_id"), "resource_memberships", ["user_id"], unique=False
+        op.f("ix_resource_memberships_user_id"),
+        resource_memberships.name,
+        ["user_id"],
+        unique=False,
     )
 
 

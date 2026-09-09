@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -84,6 +85,104 @@ describe('App', () => {
         method: 'POST',
       }),
     )
+  })
+
+  it('does not overwrite a newly created reminder with a stale initial list', async () => {
+    window.history.replaceState(null, '', '/reminders')
+    const created = {
+      id: '11111111-1111-1111-1111-111111111111',
+      title: 'Dentist',
+      detail: null,
+      due_at_utc: '2027-10-01T04:30:00Z',
+      source_timezone: 'Australia/Brisbane',
+      is_urgent: false,
+      status: 'pending',
+      created_at: '2026-09-04T10:00:00Z',
+      updated_at: '2026-09-04T10:00:00Z',
+      completed_at: null,
+      cancelled_at: null,
+    }
+    let resolveInitialList!: (response: Response) => void
+    const initialList = new Promise<Response>((resolve) => {
+      resolveInitialList = resolve
+    })
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ username: 'niki' }))
+      .mockReturnValueOnce(initialList)
+      .mockResolvedValueOnce(jsonResponse(created, 201))
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<App />)
+
+    fireEvent.change(await screen.findByLabelText('Reminder title'), {
+      target: { value: 'Dentist' },
+    })
+    fireEvent.change(screen.getByLabelText('Due date and time'), {
+      target: { value: '2027-10-01T14:30' },
+    })
+    fireEvent.change(screen.getByLabelText('Timezone'), {
+      target: { value: 'Australia/Brisbane' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Add reminder' }))
+    expect(await screen.findByText('Dentist')).toBeInTheDocument()
+
+    await act(async () => resolveInitialList(jsonResponse([])))
+
+    expect(screen.getByText('Dentist')).toBeInTheDocument()
+  })
+
+  it('does not duplicate a reminder returned by the concurrent initial list', async () => {
+    window.history.replaceState(null, '', '/reminders')
+    const created = {
+      id: '11111111-1111-1111-1111-111111111111',
+      title: 'Dentist',
+      detail: null,
+      due_at_utc: '2027-10-01T04:30:00Z',
+      source_timezone: 'Australia/Brisbane',
+      is_urgent: false,
+      status: 'pending',
+      created_at: '2026-09-04T10:00:00Z',
+      updated_at: '2026-09-04T10:00:00Z',
+      completed_at: null,
+      cancelled_at: null,
+    }
+    let resolveInitialList!: (response: Response) => void
+    let resolveCreate!: (response: Response) => void
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ username: 'niki' }))
+      .mockReturnValueOnce(
+        new Promise<Response>((resolve) => {
+          resolveInitialList = resolve
+        }),
+      )
+      .mockReturnValueOnce(
+        new Promise<Response>((resolve) => {
+          resolveCreate = resolve
+        }),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<App />)
+
+    fireEvent.change(await screen.findByLabelText('Reminder title'), {
+      target: { value: 'Dentist' },
+    })
+    fireEvent.change(screen.getByLabelText('Due date and time'), {
+      target: { value: '2027-10-01T14:30' },
+    })
+    fireEvent.change(screen.getByLabelText('Timezone'), {
+      target: { value: 'Australia/Brisbane' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Add reminder' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
+
+    await act(async () => resolveInitialList(jsonResponse([created])))
+    expect(await screen.findByText('Dentist')).toBeInTheDocument()
+    await act(async () => resolveCreate(jsonResponse(created, 201)))
+
+    await waitFor(() => expect(screen.getAllByText('Dentist')).toHaveLength(1))
   })
 
   it('edits, snoozes, reschedules, completes, and cancels reminders', async () => {
