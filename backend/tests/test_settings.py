@@ -39,6 +39,7 @@ def test_settings_load_typed_notification_configuration(monkeypatch: MonkeyPatch
     monkeypatch.setenv("TUCK_VAPID_PRIVATE_KEY", "private-key")
     monkeypatch.setenv("TUCK_VAPID_SUBJECT", "mailto:admin@example.com")
     monkeypatch.setenv("TUCK_NOTIFICATION_WORKER_POLL_SECONDS", "2.5")
+    monkeypatch.setenv("TUCK_NOTIFICATION_WORKER_LEASE_SECONDS", "120")
     monkeypatch.setenv("TUCK_NOTIFICATION_WORKER_BATCH_SIZE", "25")
     monkeypatch.setenv("TUCK_NOTIFICATION_WORKER_MAX_ATTEMPTS", "4")
 
@@ -49,6 +50,7 @@ def test_settings_load_typed_notification_configuration(monkeypatch: MonkeyPatch
     assert settings.vapid_private_key.get_secret_value() == "private-key"
     assert settings.vapid_subject == "mailto:admin@example.com"
     assert settings.notification_worker_poll_seconds == 2.5
+    assert settings.notification_worker_lease_seconds == 120
     assert settings.notification_worker_batch_size == 25
     assert settings.notification_worker_max_attempts == 4
     assert "private-key" not in repr(settings)
@@ -69,6 +71,7 @@ def test_settings_reject_incomplete_vapid_configuration(monkeypatch: MonkeyPatch
     ("environment_name", "invalid_value"),
     [
         ("TUCK_NOTIFICATION_WORKER_POLL_SECONDS", "0"),
+        ("TUCK_NOTIFICATION_WORKER_LEASE_SECONDS", "0"),
         ("TUCK_NOTIFICATION_WORKER_BATCH_SIZE", "0"),
         ("TUCK_NOTIFICATION_WORKER_MAX_ATTEMPTS", "0"),
     ],

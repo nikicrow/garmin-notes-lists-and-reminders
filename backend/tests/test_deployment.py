@@ -68,6 +68,27 @@ def test_compose_contains_web_service() -> None:
     assert "web" in services
 
 
+def test_compose_runs_reminder_worker_with_database_readiness_healthcheck() -> None:
+    services_result = subprocess.run(
+        _compose_cmd("config", "--services"),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    config_result = subprocess.run(
+        _compose_cmd("config"),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert services_result.returncode == 0, services_result.stderr
+    assert "reminder-worker" in services_result.stdout.strip().split("\n")
+    assert config_result.returncode == 0, config_result.stderr
+    assert "tuck-reminder-worker" in config_result.stdout
+    assert "--health-check" in config_result.stdout
+
+
 def test_compose_postgres_has_healthcheck() -> None:
     """Validate that PostgreSQL service defines a healthcheck."""
     result = subprocess.run(

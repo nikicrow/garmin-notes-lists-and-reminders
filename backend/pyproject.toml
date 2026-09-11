@@ -15,6 +15,7 @@ dependencies = [
 
 [project.scripts]
 tuck-bootstrap-user = "tuck_api.bootstrap_user:main"
+tuck-reminder-worker = "tuck_api.notification_worker:main"
 
 [dependency-groups]
 dev = [

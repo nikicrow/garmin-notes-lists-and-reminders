@@ -85,6 +85,38 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  reminder-worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - TUCK_DATABASE_URL=${TUCK_COMPOSE_DATABASE_URL:-postgresql+asyncpg://tuck:local-development-only@postgres:5432/tuck}
+      - TUCK_ENVIRONMENT=${TUCK_ENVIRONMENT:-development}
+      - TUCK_VAPID_PUBLIC_KEY
+      - TUCK_VAPID_PRIVATE_KEY
+      - TUCK_VAPID_SUBJECT
+      - TUCK_NOTIFICATION_WORKER_POLL_SECONDS
+      - TUCK_NOTIFICATION_WORKER_LEASE_SECONDS
+      - TUCK_NOTIFICATION_WORKER_BATCH_SIZE
+      - TUCK_NOTIFICATION_WORKER_MAX_ATTEMPTS
+    command: ["tuck-reminder-worker"]
+    healthcheck:
+      test: ["CMD", "tuck-reminder-worker", "--health-check"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    stop_grace_period: 30s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   web:
     build:
       context: .

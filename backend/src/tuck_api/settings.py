@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     vapid_private_key: SecretStr | None = Field(default=None, repr=False)
     vapid_subject: str | None = None
     notification_worker_poll_seconds: PositiveFloat = 5.0
+    notification_worker_lease_seconds: PositiveFloat = 300.0
     notification_worker_batch_size: PositiveInt = 100
     notification_worker_max_attempts: PositiveInt = 5
 
