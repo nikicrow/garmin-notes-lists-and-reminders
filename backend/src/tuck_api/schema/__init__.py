@@ -1,15 +1,15 @@
 """Current application schema assembled from immutable revision snapshots.
 
-The Phase 1 snapshot is copied into separate ``Table`` objects so ORM mappings
-can evolve without retroactively changing Alembic revisions 0002–0006.
+The Phase 2 snapshot is copied into separate ``Table`` objects so ORM mappings
+can evolve without retroactively changing Alembic revisions.
 """
 
 from sqlalchemy import MetaData
 
-from tuck_api.schema import phase1
+from tuck_api.schema import phase2
 
-metadata = MetaData(naming_convention=phase1.metadata.naming_convention)
-for snapshot_table in phase1.application_tables:
+metadata = MetaData(naming_convention=phase2.metadata.naming_convention)
+for snapshot_table in phase2.application_tables:
     snapshot_table.to_metadata(metadata)
 
 users = metadata.tables["users"]
@@ -19,6 +19,9 @@ lists = metadata.tables["lists"]
 resource_memberships = metadata.tables["resource_memberships"]
 list_items = metadata.tables["list_items"]
 reminders = metadata.tables["reminders"]
+push_subscriptions = metadata.tables["push_subscriptions"]
+reminder_recipients = metadata.tables["reminder_recipients"]
+notification_deliveries = metadata.tables["notification_deliveries"]
 
 application_tables = (
     users,
@@ -28,4 +31,7 @@ application_tables = (
     resource_memberships,
     list_items,
     reminders,
+    push_subscriptions,
+    reminder_recipients,
+    notification_deliveries,
 )

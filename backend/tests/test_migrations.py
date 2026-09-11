@@ -46,7 +46,7 @@ def test_migrations_upgrade_clean_postgresql_database(
 
     revision, tables, schema_differences = asyncio.run(read_migration_state())
 
-    assert revision == "0006_one_time_reminders"
+    assert revision == "0007_notification_foundation"
     assert {
         "users",
         "user_sessions",
@@ -55,5 +55,18 @@ def test_migrations_upgrade_clean_postgresql_database(
         "resource_memberships",
         "list_items",
         "reminders",
+        "push_subscriptions",
+        "reminder_recipients",
+        "notification_deliveries",
     } <= tables
     assert schema_differences == []
+
+    command.downgrade(config, "0006_one_time_reminders")
+
+    downgraded_revision, downgraded_tables, _ = asyncio.run(read_migration_state())
+    assert downgraded_revision == "0006_one_time_reminders"
+    assert {
+        "push_subscriptions",
+        "reminder_recipients",
+        "notification_deliveries",
+    }.isdisjoint(downgraded_tables)

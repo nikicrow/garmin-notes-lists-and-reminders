@@ -107,3 +107,43 @@ class Reminder(Base):
     id: Mapped[UUID]
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
+
+
+class PushSubscription(Base):
+    __table__ = schema.push_subscriptions
+
+    user_id: Mapped[UUID]
+    endpoint: Mapped[str]
+    p256dh: Mapped[str]
+    auth: Mapped[str]
+    expires_at: Mapped[datetime | None]
+    disabled_at: Mapped[datetime | None]
+    id: Mapped[UUID]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class ReminderRecipient(Base):
+    __table__ = schema.reminder_recipients
+
+    reminder_id: Mapped[UUID]
+    user_id: Mapped[UUID]
+    id: Mapped[UUID]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class NotificationDelivery(Base):
+    __table__ = schema.notification_deliveries
+
+    reminder_id: Mapped[UUID]
+    recipient_user_id: Mapped[UUID]
+    status: Mapped[str]
+    attempt_count: Mapped[int]
+    next_attempt_at: Mapped[datetime | None]
+    claimed_at: Mapped[datetime | None]
+    sent_at: Mapped[datetime | None]
+    last_error_code: Mapped[str | None]
+    id: Mapped[UUID]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
