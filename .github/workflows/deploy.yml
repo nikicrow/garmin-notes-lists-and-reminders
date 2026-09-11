@@ -1,0 +1,131 @@
+name: CI and deploy
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tuck-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  ci:
+    name: Quality, tests, and build
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_PASSWORD: local-development-only
+          POSTGRES_USER: tuck
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tuck -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TUCK_TEST_ADMIN_DATABASE_URL: postgresql://tuck:local-development-only@localhost:5432/postgres
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          python-version: "3.11"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 10.33.0
+          run_install: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install locked dependencies
+        run: make install
+
+      - name: Install Playwright browser
+        run: pnpm --dir frontend exec playwright install --with-deps chromium
+
+      - name: Ruff format
+        run: uv run --directory backend ruff format --check .
+
+      - name: Ruff lint
+        run: uv run --directory backend ruff check .
+
+      - name: Python typecheck
+        run: uv run --directory backend mypy
+
+      - name: Backend tests
+        run: uv run --directory backend pytest
+
+      - name: Prettier
+        run: pnpm --dir frontend format:check
+
+      - name: ESLint
+        run: pnpm --dir frontend lint
+
+      - name: TypeScript typecheck
+        run: pnpm --dir frontend typecheck
+
+      - name: Frontend tests
+        run: pnpm --dir frontend test
+
+      - name: Production frontend build
+        run: pnpm --dir frontend build
+
+      - name: Build deployment images
+        run: docker compose build
+
+  deploy:
+    name: Deploy to fedora-1
+    needs: ci
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: [self-hosted, Linux, X64, tuck-production]
+    environment: production
+    timeout-minutes: 15
+    env:
+      TUCK_ENV_FILE: ${{ vars.TUCK_ENV_FILE || '/etc/tuck/tuck.env' }}
+
+    steps:
+      - name: Check out verified revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate production configuration
+        run: scripts/validate-production-config.sh "$TUCK_ENV_FILE"
+
+      - name: Build deployment images
+        run: docker compose --env-file "$TUCK_ENV_FILE" build --pull
+
+      - name: Apply migrations and deploy
+        run: >-
+          docker compose --env-file "$TUCK_ENV_FILE" up -d --remove-orphans
+          --wait --wait-timeout 120
+
+      - name: Verify deployed services
+        run: |
+          docker compose --env-file "$TUCK_ENV_FILE" ps
+          docker compose --env-file "$TUCK_ENV_FILE" exec -T api \
+            curl --fail --silent --show-error http://localhost:8000/api/v1/ready
+          docker compose --env-file "$TUCK_ENV_FILE" exec -T web \
+            wget --quiet --spider http://127.0.0.1:80/

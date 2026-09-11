@@ -1,0 +1,6 @@
+self-hosted-runner:
+  labels:
+    - tuck-production
+
+config-variables:
+  - TUCK_ENV_FILE

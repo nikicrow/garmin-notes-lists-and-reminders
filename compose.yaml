@@ -1,0 +1,119 @@
+# Tuck containerized deployment
+#
+# Run with:
+#   cp .env.example .env   # then edit .env for your environment
+#   docker compose up -d
+#
+# Stop without removing data:
+#   docker compose down
+#
+# Remove data volumes too (local development only):
+#   docker compose down --volumes
+#
+# Required environment variables (see .env.example and docs/deployment.md):
+#   POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB, POSTGRES_PORT
+#   TUCK_COMPOSE_DATABASE_URL, TUCK_ENVIRONMENT
+#
+# Secrets are injected via a .env file or host environment. Never commit .env
+# or any file containing real credentials. For production, consider Docker
+# secrets, a vault, or equivalent secret-management tooling instead of a
+# plain .env file.
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-tuck}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-development-only}
+      POSTGRES_USER: ${POSTGRES_USER:-tuck}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - tuck-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-tuck} -d ${POSTGRES_DB:-tuck}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      TUCK_DATABASE_URL: ${TUCK_COMPOSE_DATABASE_URL:-postgresql+asyncpg://tuck:local-development-only@postgres:5432/tuck}
+      TUCK_ENVIRONMENT: ${TUCK_ENVIRONMENT:-development}
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        echo 'Running database migrations...'
+        alembic upgrade head
+        echo 'Starting application server...'
+        exec uvicorn tuck_api.main:app \
+          --host 0.0.0.0 \
+          --port 8000 \
+          --log-level info \
+          --workers 2
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  web:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    depends_on:
+      - api
+
+    ports:
+      - "127.0.0.1:${WEB_PORT:-8080}:80"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://127.0.0.1:80/",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  tuck-postgres-data:
