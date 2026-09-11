@@ -1,13 +1,25 @@
 from datetime import datetime, timedelta
 from enum import StrEnum
-from typing import cast
+from typing import Protocol, cast
 
 from sqlalchemy import func, literal, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tuck_api.models import NotificationDelivery, Reminder, ReminderRecipient
+from tuck_api.models import (
+    NotificationDelivery,
+    PushSubscription,
+    Reminder,
+    ReminderRecipient,
+)
+from tuck_api.web_push import (
+    NotificationPayload,
+    PushOutcome,
+    PushResult,
+    PushSubscriptionData,
+    build_notification_payload,
+)
 
 
 class DeliveryStatus(StrEnum):
@@ -16,6 +28,87 @@ class DeliveryStatus(StrEnum):
     SENT = "sent"
     RETRYABLE = "retryable"
     FAILED = "failed"
+
+
+class PushGateway(Protocol):
+    def send(
+        self, subscription: PushSubscriptionData, payload: NotificationPayload
+    ) -> PushResult: ...
+
+
+async def send_claimed_delivery(
+    database: AsyncSession,
+    delivery: NotificationDelivery,
+    *,
+    gateway: PushGateway,
+    now: datetime,
+    max_attempts: int,
+) -> None:
+    reminder = await database.get(Reminder, delivery.reminder_id)
+    if reminder is None:
+        raise ValueError("delivery reminder does not exist")
+    subscriptions = list(
+        await database.scalars(
+            select(PushSubscription).where(
+                PushSubscription.user_id == delivery.recipient_user_id,
+                PushSubscription.disabled_at.is_(None),
+                or_(PushSubscription.expires_at.is_(None), PushSubscription.expires_at > now),
+            )
+        )
+    )
+    payload = build_notification_payload(reminder_id=reminder.id, urgent=reminder.is_urgent)
+    results = [
+        (
+            subscription,
+            gateway.send(
+                {
+                    "endpoint": subscription.endpoint,
+                    "keys": {"p256dh": subscription.p256dh, "auth": subscription.auth},
+                },
+                payload,
+            ),
+        )
+        for subscription in subscriptions
+    ]
+    for subscription, result in results:
+        if result.outcome == PushOutcome.EXPIRED:
+            subscription.disabled_at = now
+    if results and all(result.outcome == PushOutcome.EXPIRED for _, result in results):
+        delivery.status = DeliveryStatus.FAILED
+        delivery.sent_at = None
+        delivery.next_attempt_at = None
+        delivery.claimed_at = None
+        delivery.claimed_by = None
+        delivery.last_error_code = results[-1][1].error_code
+        await database.flush()
+        return
+    if any(result.outcome == PushOutcome.SUCCESS for _, result in results):
+        delivery.status = DeliveryStatus.SENT
+        delivery.sent_at = now
+        delivery.next_attempt_at = None
+        delivery.claimed_at = None
+        delivery.claimed_by = None
+        delivery.last_error_code = None
+        await database.flush()
+        return
+    transient_results = [result for _, result in results if result.outcome == PushOutcome.TRANSIENT]
+    if transient_results and delivery.attempt_count < max_attempts:
+        backoff_seconds = min(30 * 2 ** (delivery.attempt_count - 1), 3600)
+        delivery.status = DeliveryStatus.RETRYABLE
+        delivery.sent_at = None
+        delivery.next_attempt_at = now + timedelta(seconds=backoff_seconds)
+        delivery.claimed_at = None
+        delivery.claimed_by = None
+        delivery.last_error_code = transient_results[-1].error_code
+        await database.flush()
+        return
+    delivery.status = DeliveryStatus.FAILED
+    delivery.sent_at = None
+    delivery.next_attempt_at = None
+    delivery.claimed_at = None
+    delivery.claimed_by = None
+    delivery.last_error_code = results[-1][1].error_code if results else "no_subscription"
+    await database.flush()
 
 
 async def materialize_due_deliveries(database: AsyncSession, *, now: datetime) -> int:
