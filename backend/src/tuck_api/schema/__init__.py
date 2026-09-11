@@ -4,7 +4,7 @@ The Phase 2 snapshot is copied into separate ``Table`` objects so ORM mappings
 can evolve without retroactively changing Alembic revisions.
 """
 
-from sqlalchemy import MetaData
+from sqlalchemy import CheckConstraint, Column, MetaData, String
 
 from tuck_api.schema import phase2
 
@@ -22,6 +22,16 @@ reminders = metadata.tables["reminders"]
 push_subscriptions = metadata.tables["push_subscriptions"]
 reminder_recipients = metadata.tables["reminder_recipients"]
 notification_deliveries = metadata.tables["notification_deliveries"]
+notification_deliveries.append_column(Column("claimed_by", String(100), nullable=True))
+for constraint in tuple(notification_deliveries.constraints):
+    if constraint.name == "ck_notification_deliveries_status_valid":
+        notification_deliveries.constraints.remove(constraint)
+notification_deliveries.append_constraint(
+    CheckConstraint(
+        "status IN ('pending', 'claimed', 'sent', 'retryable', 'failed')",
+        name="status_valid",
+    )
+)
 
 application_tables = (
     users,

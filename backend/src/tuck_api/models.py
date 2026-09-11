@@ -153,6 +153,7 @@ class NotificationDelivery(Base):
     attempt_count: Mapped[int]
     next_attempt_at: Mapped[datetime | None]
     claimed_at: Mapped[datetime | None]
+    claimed_by: Mapped[str | None]
     sent_at: Mapped[datetime | None]
     last_error_code: Mapped[str | None]
     id: Mapped[UUID]
