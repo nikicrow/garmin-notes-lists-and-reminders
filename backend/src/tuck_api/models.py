@@ -1,8 +1,10 @@
+from __future__ import annotations
+
 from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import DateTime, Uuid, func
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from tuck_api import schema
 
@@ -104,9 +106,18 @@ class Reminder(Base):
     status: Mapped[str]
     completed_at: Mapped[datetime | None]
     cancelled_at: Mapped[datetime | None]
+    recipient_links: Mapped[list[ReminderRecipient]] = relationship(
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        order_by="ReminderRecipient.user_id",
+    )
     id: Mapped[UUID]
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
+
+    @property
+    def recipient_user_ids(self) -> list[UUID]:
+        return [recipient.user_id for recipient in self.recipient_links]
 
 
 class PushSubscription(Base):
