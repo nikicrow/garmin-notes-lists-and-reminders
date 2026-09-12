@@ -3,9 +3,11 @@ import { useEffect, useRef, useState } from 'react'
 import {
   ApiError,
   authApi,
+  householdApi,
   listsApi,
   notesApi,
   remindersApi,
+  type HouseholdUser,
   type ListItem,
   type Note,
   type Reminder,
@@ -764,8 +766,31 @@ function localTimeInTimezoneToUtc(localTime: string, timezone: string): string {
   return new Date(candidate).toISOString()
 }
 
-function RemindersPage() {
+function displayNames(userIds: string[], household: HouseholdUser[]): string {
+  const selected = new Set(userIds)
+  const names = household
+    .filter((user) => selected.has(user.id))
+    .map((user) => user.username)
+  return new Intl.ListFormat('en', {
+    style: 'long',
+    type: 'conjunction',
+  }).format(names.map((name) => name.charAt(0).toUpperCase() + name.slice(1)))
+}
+
+function deliveryStatusLabel(status: Reminder['deliveries'][number]['status']) {
+  return {
+    pending: 'Waiting',
+    claimed: 'Sending',
+    sent: 'Sent',
+    retryable: 'Retry scheduled',
+    failed: 'Failed',
+  }[status]
+}
+
+function RemindersPage({ currentUsername }: { currentUsername: string }) {
   const [reminders, setReminders] = useState<Reminder[] | null>(null)
+  const [household, setHousehold] = useState<HouseholdUser[] | null>(null)
+  const [recipientUserIds, setRecipientUserIds] = useState<string[]>([])
   const mutationRevision = useRef(0)
   const [title, setTitle] = useState('')
   const [detail, setDetail] = useState('')
@@ -808,6 +833,34 @@ function RemindersPage() {
     }
   }, [])
 
+  useEffect(() => {
+    let active = true
+    void householdApi
+      .users()
+      .then((users) => {
+        if (active) {
+          setHousehold(users)
+          const currentUser = users.find(
+            (user) => user.username === currentUsername,
+          )
+          if (currentUser !== undefined) {
+            setRecipientUserIds((current) =>
+              current.length === 0 ? [currentUser.id] : current,
+            )
+          }
+        }
+      })
+      .catch((caught: unknown) => {
+        if (active) {
+          setHousehold([])
+          setError(messageFor(caught))
+        }
+      })
+    return () => {
+      active = false
+    }
+  }, [currentUsername])
+
   async function createReminder(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setSubmitting(true)
@@ -819,6 +872,7 @@ function RemindersPage() {
         due_at_utc: localTimeInTimezoneToUtc(dueAt, timezone),
         source_timezone: timezone,
         is_urgent: urgent,
+        recipient_user_ids: recipientUserIds,
       })
       mutationRevision.current += 1
       upsertReminder(created)
@@ -826,6 +880,10 @@ function RemindersPage() {
       setDetail('')
       setDueAt('')
       setUrgent(false)
+      const currentUser = household?.find(
+        (user) => user.username === currentUsername,
+      )
+      setRecipientUserIds(currentUser === undefined ? [] : [currentUser.id])
     } catch (caught) {
       setError(messageFor(caught))
     } finally {
@@ -915,7 +973,7 @@ function RemindersPage() {
         <p className="eyebrow">Right on time</p>
         <h1 id="reminders-heading">Reminders</h1>
         <p className="phase-notice">
-          Notifications are not delivered in Phase 1.
+          Delivery status updates after reminders are due.
         </p>
       </div>
       <form
@@ -959,7 +1017,33 @@ function RemindersPage() {
           />
           <span>Urgent</span>
         </label>
-        <button disabled={submitting} type="submit">
+        <fieldset>
+          <legend>Recipients</legend>
+          {household?.map((user) => (
+            <label className="check-label" key={user.id}>
+              <input
+                checked={recipientUserIds.includes(user.id)}
+                onChange={(event) =>
+                  setRecipientUserIds((current) =>
+                    event.target.checked
+                      ? [...current, user.id]
+                      : current.filter((id) => id !== user.id),
+                  )
+                }
+                type="checkbox"
+              />
+              <span>
+                {user.username.charAt(0).toUpperCase() + user.username.slice(1)}
+              </span>
+            </label>
+          ))}
+        </fieldset>
+        <button
+          disabled={
+            submitting || household === null || recipientUserIds.length === 0
+          }
+          type="submit"
+        >
           Add reminder
         </button>
       </form>
@@ -1030,10 +1114,50 @@ function RemindersPage() {
                     Due {new Date(reminder.due_at_utc).toLocaleString()} (
                     {reminder.source_timezone})
                   </p>
+                  <p>
+                    Recipients:{' '}
+                    {displayNames(reminder.recipient_user_ids, household ?? [])}
+                  </p>
+                  {household?.find((user) => user.username === currentUsername)
+                    ?.id === reminder.creator_user_id ? null : (
+                    <p>
+                      Received from{' '}
+                      {displayNames(
+                        [reminder.creator_user_id],
+                        household ?? [],
+                      )}
+                    </p>
+                  )}
+                  {reminder.deliveries.length === 0 ? (
+                    <p>Delivery: Waiting until due</p>
+                  ) : (
+                    <ul aria-label={`Delivery history for ${reminder.title}`}>
+                      {reminder.deliveries.map((delivery) => (
+                        <li key={delivery.recipient_user_id}>
+                          <p>
+                            Delivery to{' '}
+                            {displayNames(
+                              [delivery.recipient_user_id],
+                              household ?? [],
+                            )}
+                            : {deliveryStatusLabel(delivery.status)}
+                          </p>
+                          <p>
+                            {delivery.attempt_count}{' '}
+                            {delivery.attempt_count === 1
+                              ? 'attempt'
+                              : 'attempts'}
+                          </p>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                   <p className={`status-badge ${reminder.status}`}>
                     {reminder.status}
                   </p>
-                  {reminder.status === 'pending' ? (
+                  {reminder.status === 'pending' &&
+                  household?.find((user) => user.username === currentUsername)
+                    ?.id === reminder.creator_user_id ? (
                     <div className="compact-actions">
                       <button
                         aria-label={`Edit ${reminder.title}`}
@@ -1251,7 +1375,7 @@ function AuthenticatedShell({
         ) : path === '/lists' ? (
           <ListsPage />
         ) : (
-          <RemindersPage />
+          <RemindersPage currentUsername={user.username} />
         )}
       </main>
     </div>

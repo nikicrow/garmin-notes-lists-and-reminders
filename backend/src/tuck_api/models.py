@@ -111,6 +111,12 @@ class Reminder(Base):
         lazy="selectin",
         order_by="ReminderRecipient.user_id",
     )
+    deliveries: Mapped[list[NotificationDelivery]] = relationship(
+        lazy="selectin",
+        order_by="NotificationDelivery.recipient_user_id",
+        primaryjoin="Reminder.id == foreign(NotificationDelivery.reminder_id)",
+        viewonly=True,
+    )
     id: Mapped[UUID]
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]

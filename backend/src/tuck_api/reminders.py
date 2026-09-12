@@ -92,10 +92,23 @@ class ReminderSnooze(DueTime):
     pass
 
 
+class NotificationDeliveryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    recipient_user_id: UUID
+    status: Literal["pending", "claimed", "sent", "retryable", "failed"]
+    attempt_count: int
+    next_attempt_at: datetime | None
+    sent_at: datetime | None
+    last_error_code: str | None
+    updated_at: datetime
+
+
 class ReminderResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    creator_user_id: UUID
     title: str
     detail: str | None
     due_at_utc: datetime
@@ -107,6 +120,7 @@ class ReminderResponse(BaseModel):
     completed_at: datetime | None
     cancelled_at: datetime | None
     recipient_user_ids: list[UUID]
+    deliveries: list[NotificationDeliveryResponse]
 
 
 async def create_reminder(database: AsyncSession, actor: User, payload: ReminderCreate) -> Reminder:

@@ -2,6 +2,11 @@ export interface User {
   username: string
 }
 
+export interface HouseholdUser {
+  id: string
+  username: string
+}
+
 export interface Note {
   id: string
   body: string
@@ -34,6 +39,7 @@ export interface ListItem {
 
 export interface Reminder {
   id: string
+  creator_user_id: string
   title: string
   detail: string | null
   due_at_utc: string
@@ -44,6 +50,18 @@ export interface Reminder {
   updated_at: string
   completed_at: string | null
   cancelled_at: string | null
+  recipient_user_ids: string[]
+  deliveries: ReminderDelivery[]
+}
+
+export interface ReminderDelivery {
+  recipient_user_id: string
+  status: 'pending' | 'claimed' | 'sent' | 'retryable' | 'failed'
+  attempt_count: number
+  next_attempt_at: string | null
+  sent_at: string | null
+  last_error_code: string | null
+  updated_at: string
 }
 
 export class ApiError extends Error {
@@ -97,6 +115,10 @@ export const authApi = {
   logout: () => request<void>('/api/v1/auth/logout', { method: 'POST' }),
 }
 
+export const householdApi = {
+  users: () => request<HouseholdUser[]>('/api/v1/household/users'),
+}
+
 export const notesApi = {
   list: () => request<Note[]>('/api/v1/notes'),
   create: (body: string) =>
@@ -121,6 +143,7 @@ export const remindersApi = {
     due_at_utc: string
     source_timezone: string
     is_urgent: boolean
+    recipient_user_ids: string[]
   }) =>
     request<Reminder>('/api/v1/reminders', {
       method: 'POST',

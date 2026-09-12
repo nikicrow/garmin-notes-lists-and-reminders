@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from httpx import ASGITransport, AsyncClient, Response
@@ -6,7 +7,7 @@ from pytest import MonkeyPatch
 
 from tuck_api.db import create_engine, create_session_factory, get_session_factory, session_scope
 from tuck_api.main import app, get_settings
-from tuck_api.models import Base, User
+from tuck_api.models import Base, NotificationDelivery, User
 from tuck_api.security import hash_password
 
 
@@ -233,6 +234,60 @@ def test_reminder_can_be_assigned_to_both_household_users(
 
     assert created.status_code == 201
     assert set(created.json()["recipient_user_ids"]) == recipient_ids
+
+
+def test_reminder_response_exposes_creator_and_delivery_history(
+    isolated_database_url: str, monkeypatch: MonkeyPatch
+) -> None:
+    configure_app(monkeypatch, isolated_database_url)
+    asyncio.run(create_accounts(isolated_database_url))
+
+    async def exercise() -> Response:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="https://test") as client:
+            await login(client, "niki")
+            users = (await client.get("/api/v1/household/users")).json()
+            niki_id = next(user["id"] for user in users if user["username"] == "niki")
+            ben_id = next(user["id"] for user in users if user["username"] == "ben")
+            created = await create_reminder(client, "For Ben", [ben_id])
+
+            engine = create_engine(isolated_database_url)
+            factory = create_session_factory(engine)
+            try:
+                async with session_scope(factory) as database:
+                    database.add(
+                        NotificationDelivery(
+                            reminder_id=created.json()["id"],
+                            recipient_user_id=ben_id,
+                            status="retryable",
+                            attempt_count=2,
+                            next_attempt_at=datetime(2026, 10, 1, 4, 35, tzinfo=UTC),
+                            last_error_code="push_unavailable",
+                        )
+                    )
+            finally:
+                await engine.dispose()
+
+            response = await client.get(f"/api/v1/reminders/{created.json()['id']}")
+            assert response.json()["creator_user_id"] == niki_id
+            return response
+
+    try:
+        response = asyncio.run(exercise())
+    finally:
+        get_settings.cache_clear()
+        get_session_factory.cache_clear()
+
+    assert response.status_code == 200
+    delivery = response.json()["deliveries"][0]
+    assert isinstance(delivery.pop("updated_at"), str)
+    assert delivery == {
+        "recipient_user_id": response.json()["recipient_user_ids"][0],
+        "status": "retryable",
+        "attempt_count": 2,
+        "next_attempt_at": "2026-10-01T04:35:00Z",
+        "sent_at": None,
+        "last_error_code": "push_unavailable",
+    }
 
 
 def test_unknown_recipient_rejects_reminder_atomically(
