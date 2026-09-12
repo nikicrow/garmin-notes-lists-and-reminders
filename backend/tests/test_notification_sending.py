@@ -14,7 +14,7 @@ from tuck_api.models import (
     ReminderRecipient,
     User,
 )
-from tuck_api.notification_deliveries import send_claimed_delivery
+from tuck_api.notification_deliveries import PushGateway, send_claimed_delivery
 from tuck_api.security import hash_password
 from tuck_api.web_push import NotificationPayload, PushOutcome, PushResult, PushSubscriptionData
 
@@ -29,10 +29,15 @@ class RecordingGateway:
         return next(self.results)
 
 
+class TimingOutGateway:
+    def send(self, subscription: PushSubscriptionData, payload: NotificationPayload) -> PushResult:
+        raise TimeoutError("provider response timed out")
+
+
 async def seed_and_send(
     isolated_database_url: str,
     *,
-    gateway: RecordingGateway,
+    gateway: PushGateway,
     now: datetime,
     attempt_count: int = 1,
     max_attempts: int = 5,
@@ -182,6 +187,24 @@ def test_transient_failure_at_maximum_attempts_becomes_terminal(
 
     assert persisted.status == "failed"
     assert persisted.next_attempt_at is None
+    assert persisted.last_error_code == "network_error"
+
+
+def test_unexpected_provider_timeout_is_recorded_for_retry(
+    isolated_database_url: str,
+) -> None:
+    now = datetime.now(UTC)
+
+    persisted, _ = asyncio.run(
+        seed_and_send(
+            isolated_database_url,
+            gateway=TimingOutGateway(),
+            now=now,
+        )
+    )
+
+    assert persisted.status == "retryable"
+    assert persisted.next_attempt_at == now + timedelta(seconds=30)
     assert persisted.last_error_code == "network_error"
 
 

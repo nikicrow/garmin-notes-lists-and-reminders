@@ -57,19 +57,19 @@ async def send_claimed_delivery(
         )
     )
     payload = build_notification_payload(reminder_id=reminder.id, urgent=reminder.is_urgent)
-    results = [
-        (
-            subscription,
-            gateway.send(
+    results: list[tuple[PushSubscription, PushResult]] = []
+    for subscription in subscriptions:
+        try:
+            result = gateway.send(
                 {
                     "endpoint": subscription.endpoint,
                     "keys": {"p256dh": subscription.p256dh, "auth": subscription.auth},
                 },
                 payload,
-            ),
-        )
-        for subscription in subscriptions
-    ]
+            )
+        except TimeoutError:
+            result = PushResult(PushOutcome.TRANSIENT, "network_error")
+        results.append((subscription, result))
     for subscription, result in results:
         if result.outcome == PushOutcome.EXPIRED:
             subscription.disabled_at = now
