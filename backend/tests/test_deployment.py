@@ -89,6 +89,26 @@ def test_compose_runs_reminder_worker_with_database_readiness_healthcheck() -> N
     assert "--health-check" in config_result.stdout
 
 
+def test_compose_injects_complete_vapid_settings_into_api_and_worker() -> None:
+    result = subprocess.run(
+        _compose_cmd("config"),
+        env=os.environ
+        | {
+            "TUCK_VAPID_PUBLIC_KEY": "test-public-key",
+            "TUCK_VAPID_PRIVATE_KEY": "test-private-key",
+            "TUCK_VAPID_SUBJECT": "mailto:operator@example.invalid",
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.count("TUCK_VAPID_PUBLIC_KEY: test-public-key") == 2
+    assert result.stdout.count("TUCK_VAPID_PRIVATE_KEY: test-private-key") == 2
+    assert result.stdout.count("TUCK_VAPID_SUBJECT: mailto:operator@example.invalid") == 2
+
+
 def test_compose_postgres_has_healthcheck() -> None:
     """Validate that PostgreSQL service defines a healthcheck."""
     result = subprocess.run(
@@ -251,6 +271,31 @@ def test_production_config_rejects_development_defaults(tmp_path: Path) -> None:
     assert "development database password" in result.stderr
 
 
+def test_production_config_rejects_missing_vapid_settings(tmp_path: Path) -> None:
+    env_file = tmp_path / "production.env"
+    env_file.write_text(
+        "\n".join(
+            (
+                "POSTGRES_PASSWORD=test-production-password",
+                "TUCK_COMPOSE_DATABASE_URL=postgresql+asyncpg://tuck:"
+                "test-production-password@postgres:5432/tuck",
+                "TUCK_ENVIRONMENT=production",
+            )
+        )
+    )
+
+    result = subprocess.run(
+        [_PRODUCTION_CONFIG_VALIDATOR, str(env_file)],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode != 0
+    assert "VAPID settings must all be non-empty" in result.stderr
+
+
 def test_production_config_accepts_explicit_production_values(tmp_path: Path) -> None:
     env_file = tmp_path / "production.env"
     env_file.write_text(
@@ -260,6 +305,9 @@ def test_production_config_accepts_explicit_production_values(tmp_path: Path) ->
                 "TUCK_COMPOSE_DATABASE_URL=postgresql+asyncpg://tuck:"
                 "test-production-password@postgres:5432/tuck",
                 "TUCK_ENVIRONMENT=production",
+                "TUCK_VAPID_PUBLIC_KEY=test-public-key",
+                "TUCK_VAPID_PRIVATE_KEY=test-private-key",
+                "TUCK_VAPID_SUBJECT=mailto:operator@example.invalid",
             )
         )
     )

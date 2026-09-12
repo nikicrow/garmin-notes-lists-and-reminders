@@ -96,7 +96,7 @@ jobs:
         run: docker compose build
 
   deploy:
-    name: Deploy to fedora-1
+    name: Deploy to production host
     needs: ci
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: [self-hosted, Linux, X64, tuck-production]
