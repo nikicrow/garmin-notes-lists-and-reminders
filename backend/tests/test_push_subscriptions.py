@@ -115,8 +115,10 @@ def test_authenticated_user_can_register_push_subscription(
 
     assert response.status_code == 201
     body = response.json()
-    assert set(body) == {"id", "endpoint", "expirationTime"}
-    assert body["endpoint"] == "https://push.example.test/subscriptions/browser-1"
+    assert set(body) == {"id", "expirationTime"}
+    assert "push.example.test" not in response.text
+    assert subscription_payload()["keys"]["p256dh"] not in response.text
+    assert subscription_payload()["keys"]["auth"] not in response.text
     assert body["expirationTime"] is None
 
 
@@ -240,6 +242,7 @@ def test_user_cannot_take_over_another_users_endpoint(
 ) -> None:
     configure_app(monkeypatch, isolated_database_url)
     asyncio.run(create_accounts(isolated_database_url))
+    takeover_auth = base64.urlsafe_b64encode(bytes(range(16, 32))).rstrip(b"=").decode()
 
     async def attempt_takeover() -> tuple[Response, Response]:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="https://test") as client:
@@ -251,7 +254,7 @@ def test_user_cannot_take_over_another_users_endpoint(
             takeover_payload = subscription_payload()
             takeover_payload["keys"] = {
                 **takeover_payload["keys"],
-                "auth": base64.urlsafe_b64encode(bytes(range(16, 32))).rstrip(b"=").decode(),
+                "auth": takeover_auth,
             }
             takeover = await client.post("/api/v1/push-subscriptions", json=takeover_payload)
             return registered, takeover
@@ -264,6 +267,8 @@ def test_user_cannot_take_over_another_users_endpoint(
 
     assert registered.status_code == 201
     assert takeover.status_code == 409
+    assert subscription_payload()["endpoint"] not in takeover.text
+    assert takeover_auth not in takeover.text
 
 
 def test_user_cannot_revoke_another_users_subscription(
@@ -289,7 +294,11 @@ def test_user_cannot_revoke_another_users_subscription(
         get_session_factory.cache_clear()
 
     assert registered.status_code == 201
-    assert revoked.status_code == 404
+    assert (revoked.status_code, revoked.json()) == (
+        404,
+        {"detail": "Push subscription not found"},
+    )
+    assert subscription_payload()["endpoint"] not in revoked.text
 
 
 def test_registration_rejects_malformed_endpoint_port(

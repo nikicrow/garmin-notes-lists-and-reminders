@@ -73,6 +73,7 @@ def test_web_push_gateway_sends_json_with_vapid_and_urgency() -> None:
     assert result.outcome == PushOutcome.SUCCESS
     assert json.loads(call["data"]) == payload
     assert call["headers"] == {"Urgency": "high"}
+    assert call["timeout"] == 10
     assert call["vapid_claims"] == {"sub": "mailto:admin@example.com"}
     assert private_key.get_secret_value() not in repr(gateway)
 

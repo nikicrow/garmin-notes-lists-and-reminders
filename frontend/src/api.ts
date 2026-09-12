@@ -66,7 +66,6 @@ export interface ReminderDelivery {
 
 export interface RegisteredPushSubscription {
   id: string
-  endpoint: string
   expirationTime: string | null
 }
 

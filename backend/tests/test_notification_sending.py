@@ -1,8 +1,12 @@
 import asyncio
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import UTC, datetime, timedelta
+from threading import Event
 from uuid import UUID, uuid4
 
+import pytest
 from sqlalchemy import select
 
 from tuck_api.db import create_engine, create_session_factory, session_scope
@@ -15,6 +19,7 @@ from tuck_api.models import (
     User,
 )
 from tuck_api.notification_deliveries import PushGateway, send_claimed_delivery
+from tuck_api.reminders import transition_reminder
 from tuck_api.security import hash_password
 from tuck_api.web_push import NotificationPayload, PushOutcome, PushResult, PushSubscriptionData
 
@@ -34,6 +39,17 @@ class TimingOutGateway:
         raise TimeoutError("provider response timed out")
 
 
+class PausingGateway:
+    def __init__(self) -> None:
+        self.entered = Event()
+        self.release = Event()
+
+    def send(self, subscription: PushSubscriptionData, payload: NotificationPayload) -> PushResult:
+        self.entered.set()
+        assert self.release.wait(timeout=5)
+        return PushResult.success()
+
+
 async def seed_and_send(
     isolated_database_url: str,
     *,
@@ -42,6 +58,7 @@ async def seed_and_send(
     attempt_count: int = 1,
     max_attempts: int = 5,
     subscription_count: int = 1,
+    reminder_status: str = "pending",
 ) -> tuple[NotificationDelivery, list[PushSubscription]]:
     engine = create_engine(isolated_database_url)
     factory = create_session_factory(engine)
@@ -59,6 +76,7 @@ async def seed_and_send(
                 due_at_utc=now,
                 source_timezone="Australia/Brisbane",
                 is_urgent=True,
+                status=reminder_status,
             )
             reminder.recipient_links = [ReminderRecipient(user_id=user.id)]
             database.add(reminder)
@@ -125,6 +143,135 @@ def test_successful_send_persists_delivery_history(isolated_database_url: str) -
     assert subscription["endpoint"] == "https://push.example.test/subscription-0"
     assert payload["data"]["urgency"] == "high"
     assert "Private reminder" not in str(payload)
+
+
+@pytest.mark.parametrize("reminder_status", ["completed", "cancelled"])
+def test_terminal_reminder_is_not_delivered(
+    isolated_database_url: str, reminder_status: str
+) -> None:
+    now = datetime.now(UTC)
+    gateway = RecordingGateway([PushResult.success()])
+
+    persisted, _ = asyncio.run(
+        seed_and_send(
+            isolated_database_url,
+            gateway=gateway,
+            now=now,
+            reminder_status=reminder_status,
+        )
+    )
+
+    assert gateway.calls == []
+    assert persisted.status == "failed"
+    assert persisted.last_error_code == "reminder_not_pending"
+    assert persisted.next_attempt_at is None
+
+
+def test_delivery_serializes_with_terminal_reminder_transition(
+    isolated_database_url: str,
+) -> None:
+    now = datetime.now(UTC)
+    gateway = PausingGateway()
+
+    async def seed() -> tuple[UUID, UUID, UUID]:
+        engine = create_engine(isolated_database_url)
+        factory = create_session_factory(engine)
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with session_scope(factory) as database:
+                owner = User(username="niki", password_hash=hash_password("password"))
+                database.add(owner)
+                await database.flush()
+                reminder = Reminder(
+                    creator_user_id=owner.id,
+                    title="Private reminder",
+                    detail=None,
+                    due_at_utc=now,
+                    source_timezone="UTC",
+                    is_urgent=False,
+                )
+                reminder.recipient_links = [ReminderRecipient(user_id=owner.id)]
+                database.add(reminder)
+                database.add(
+                    PushSubscription(
+                        user_id=owner.id,
+                        endpoint="https://push.example.test/subscription",
+                        p256dh="public-key",
+                        auth="auth-secret",
+                    )
+                )
+                await database.flush()
+                delivery = NotificationDelivery(
+                    reminder_id=reminder.id,
+                    recipient_user_id=owner.id,
+                    status="claimed",
+                    attempt_count=1,
+                    next_attempt_at=now,
+                    claimed_at=now,
+                    claimed_by="worker-1",
+                )
+                database.add(delivery)
+                await database.flush()
+                return owner.id, reminder.id, delivery.id
+        finally:
+            await engine.dispose()
+
+    owner_id, reminder_id, delivery_id = asyncio.run(seed())
+
+    async def send() -> None:
+        engine = create_engine(isolated_database_url)
+        factory = create_session_factory(engine)
+        try:
+            async with session_scope(factory) as database:
+                delivery = await database.get(NotificationDelivery, delivery_id)
+                assert delivery is not None
+                await send_claimed_delivery(
+                    database,
+                    delivery,
+                    gateway=gateway,
+                    now=now,
+                    max_attempts=5,
+                )
+        finally:
+            await engine.dispose()
+
+    async def cancel() -> None:
+        engine = create_engine(isolated_database_url)
+        factory = create_session_factory(engine)
+        try:
+            async with session_scope(factory) as database:
+                owner = await database.get(User, owner_id)
+                assert owner is not None
+                await transition_reminder(database, owner, reminder_id, "cancelled")
+        finally:
+            await engine.dispose()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        send_future = executor.submit(asyncio.run, send())
+        assert gateway.entered.wait(timeout=5)
+        cancel_future = executor.submit(asyncio.run, cancel())
+        try:
+            with pytest.raises(FutureTimeoutError):
+                cancel_future.result(timeout=0.2)
+        finally:
+            gateway.release.set()
+        send_future.result(timeout=5)
+        cancel_future.result(timeout=5)
+
+    async def persisted_states() -> tuple[str, str]:
+        engine = create_engine(isolated_database_url)
+        factory = create_session_factory(engine)
+        try:
+            async with factory() as database:
+                reminder = await database.get(Reminder, reminder_id)
+                delivery = await database.get(NotificationDelivery, delivery_id)
+                assert reminder is not None and delivery is not None
+                return reminder.status, delivery.status
+        finally:
+            await engine.dispose()
+
+    assert asyncio.run(persisted_states()) == ("cancelled", "sent")
 
 
 def test_expired_subscription_is_disabled_and_delivery_fails(

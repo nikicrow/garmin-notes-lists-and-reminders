@@ -44,9 +44,20 @@ async def send_claimed_delivery(
     now: datetime,
     max_attempts: int,
 ) -> None:
-    reminder = await database.get(Reminder, delivery.reminder_id)
+    reminder = await database.scalar(
+        select(Reminder).where(Reminder.id == delivery.reminder_id).with_for_update()
+    )
     if reminder is None:
         raise ValueError("delivery reminder does not exist")
+    if reminder.status != "pending":
+        delivery.status = DeliveryStatus.FAILED
+        delivery.sent_at = None
+        delivery.next_attempt_at = None
+        delivery.claimed_at = None
+        delivery.claimed_by = None
+        delivery.last_error_code = "reminder_not_pending"
+        await database.flush()
+        return
     subscriptions = list(
         await database.scalars(
             select(PushSubscription).where(

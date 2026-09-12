@@ -49,6 +49,7 @@ class PyWebPushGateway:
     vapid_private_key: SecretStr
     vapid_subject: str
     sender: Callable[..., object] = webpush
+    timeout_seconds: float = 10
 
     def send(self, subscription: PushSubscriptionData, payload: NotificationPayload) -> PushResult:
         try:
@@ -58,6 +59,7 @@ class PyWebPushGateway:
                 vapid_private_key=self.vapid_private_key.get_secret_value(),
                 vapid_claims={"sub": self.vapid_subject},
                 headers={"Urgency": payload["data"]["urgency"]},
+                timeout=self.timeout_seconds,
             )
         except WebPushException as error:
             outcome = classify_push_failure(status_code=error.status_code)

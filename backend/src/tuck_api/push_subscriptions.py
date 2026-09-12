@@ -147,7 +147,6 @@ class PushSubscriptionResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
     id: UUID
-    endpoint: str
     expiration_time: datetime | None = Field(
         validation_alias="expires_at", serialization_alias="expirationTime"
     )
