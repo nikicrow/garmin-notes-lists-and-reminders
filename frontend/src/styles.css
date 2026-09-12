@@ -506,6 +506,12 @@ nav a[aria-current='page'] {
   box-shadow: inset 0.3rem 0 #bd6c39;
 }
 
+.reminder-list > li.linked,
+.reminder-list > li:focus {
+  outline: 0.2rem solid #245c46;
+  outline-offset: 0.15rem;
+}
+
 .reminder-heading {
   display: flex;
   align-items: center;

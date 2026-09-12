@@ -64,6 +64,12 @@ export interface ReminderDelivery {
   updated_at: string
 }
 
+export interface RegisteredPushSubscription {
+  id: string
+  endpoint: string
+  expirationTime: string | null
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -117,6 +123,22 @@ export const authApi = {
 
 export const householdApi = {
   users: () => request<HouseholdUser[]>('/api/v1/household/users'),
+}
+
+export const pushSubscriptionsApi = {
+  publicKey: async () =>
+    (
+      await request<{ public_key: string }>(
+        '/api/v1/push-subscriptions/vapid-public-key',
+      )
+    ).public_key,
+  register: (subscription: PushSubscriptionJSON) =>
+    request<RegisteredPushSubscription>('/api/v1/push-subscriptions', {
+      method: 'POST',
+      body: JSON.stringify(subscription),
+    }),
+  revoke: (id: string) =>
+    request<void>(`/api/v1/push-subscriptions/${id}`, { method: 'DELETE' }),
 }
 
 export const notesApi = {

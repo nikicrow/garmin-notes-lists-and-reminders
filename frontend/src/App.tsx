@@ -6,6 +6,7 @@ import {
   householdApi,
   listsApi,
   notesApi,
+  pushSubscriptionsApi,
   remindersApi,
   type HouseholdUser,
   type ListItem,
@@ -787,7 +788,126 @@ function deliveryStatusLabel(status: Reminder['deliveries'][number]['status']) {
   }[status]
 }
 
+const PUSH_SUBSCRIPTION_ID_KEY = 'tuck-push-subscription-id'
+
+function decodeBase64Url(value: string): Uint8Array<ArrayBuffer> {
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
+  const decoded = window.atob(
+    normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '='),
+  )
+  return Uint8Array.from(decoded, (character) => character.charCodeAt(0))
+}
+
+function NotificationControl() {
+  const supported =
+    'Notification' in window &&
+    'serviceWorker' in navigator &&
+    'PushManager' in window
+  const [subscriptionId, setSubscriptionId] = useState<string | null>(() =>
+    window.localStorage.getItem(PUSH_SUBSCRIPTION_ID_KEY),
+  )
+  const [busy, setBusy] = useState(false)
+  const [messageIsError, setMessageIsError] = useState(
+    supported && Notification.permission === 'denied',
+  )
+  const [message, setMessage] = useState<string | null>(
+    supported
+      ? Notification.permission === 'denied'
+        ? 'Notifications are blocked in your browser settings.'
+        : null
+      : 'This browser does not support push notifications.',
+  )
+
+  async function enable() {
+    setBusy(true)
+    setMessage(null)
+    setMessageIsError(false)
+    try {
+      const permission = await Notification.requestPermission()
+      if (permission !== 'granted') {
+        setMessageIsError(true)
+        setMessage(
+          'Notifications were not enabled. Allow them in your browser settings.',
+        )
+        return
+      }
+      const publicKey = await pushSubscriptionsApi.publicKey()
+      const registration = await navigator.serviceWorker.ready
+      const current = await registration.pushManager.getSubscription()
+      const browserSubscription =
+        current ??
+        (await registration.pushManager.subscribe({
+          applicationServerKey: decodeBase64Url(publicKey),
+          userVisibleOnly: true,
+        }))
+      const registered = await pushSubscriptionsApi.register(
+        browserSubscription.toJSON(),
+      )
+      window.localStorage.setItem(PUSH_SUBSCRIPTION_ID_KEY, registered.id)
+      setSubscriptionId(registered.id)
+      setMessage('Notifications are enabled on this device.')
+    } catch (caught) {
+      setMessageIsError(true)
+      setMessage(messageFor(caught))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function disable() {
+    if (subscriptionId === null) return
+    setBusy(true)
+    setMessage(null)
+    setMessageIsError(false)
+    try {
+      await pushSubscriptionsApi.revoke(subscriptionId)
+      const registration = await navigator.serviceWorker.ready
+      const browserSubscription =
+        await registration.pushManager.getSubscription()
+      if (browserSubscription !== null) await browserSubscription.unsubscribe()
+      window.localStorage.removeItem(PUSH_SUBSCRIPTION_ID_KEY)
+      setSubscriptionId(null)
+      setMessage('Notifications are disabled on this device.')
+    } catch (caught) {
+      setMessageIsError(true)
+      setMessage(messageFor(caught))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section
+      className="notification-control"
+      aria-labelledby="notifications-heading"
+    >
+      <h2 id="notifications-heading">Notifications</h2>
+      <p>Get a private alert when a reminder is due.</p>
+      {supported && Notification.permission !== 'denied' ? (
+        <button
+          className="secondary-button"
+          disabled={busy}
+          onClick={() =>
+            subscriptionId === null ? void enable() : void disable()
+          }
+          type="button"
+        >
+          {subscriptionId === null
+            ? 'Enable notifications'
+            : 'Disable notifications'}
+        </button>
+      ) : null}
+      {message === null ? null : (
+        <p role={messageIsError ? 'alert' : 'status'}>{message}</p>
+      )}
+    </section>
+  )
+}
+
 function RemindersPage({ currentUsername }: { currentUsername: string }) {
+  const linkedReminderId = new URLSearchParams(window.location.search).get(
+    'reminder',
+  )
   const [reminders, setReminders] = useState<Reminder[] | null>(null)
   const [household, setHousehold] = useState<HouseholdUser[] | null>(null)
   const [recipientUserIds, setRecipientUserIds] = useState<string[]>([])
@@ -811,6 +931,15 @@ function RemindersPage({ currentUsername }: { currentUsername: string }) {
   const [newTimezone, setNewTimezone] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (
+      linkedReminderId !== null &&
+      reminders?.some((reminder) => reminder.id === linkedReminderId)
+    ) {
+      document.getElementById(`reminder-${linkedReminderId}`)?.focus()
+    }
+  }, [linkedReminderId, reminders])
 
   useEffect(() => {
     let active = true
@@ -976,6 +1105,7 @@ function RemindersPage({ currentUsername }: { currentUsername: string }) {
           Delivery status updates after reminders are due.
         </p>
       </div>
+      <NotificationControl />
       <form
         className="reminder-composer"
         onSubmit={(event) => void createReminder(event)}
@@ -1056,8 +1186,15 @@ function RemindersPage({ currentUsername }: { currentUsername: string }) {
         <ul className="reminder-list" aria-label="Reminders">
           {reminders.map((reminder) => (
             <li
-              className={reminder.is_urgent ? 'urgent' : ''}
+              className={[
+                reminder.is_urgent ? 'urgent' : '',
+                reminder.id === linkedReminderId ? 'linked' : '',
+              ]
+                .filter(Boolean)
+                .join(' ')}
+              id={`reminder-${reminder.id}`}
               key={reminder.id}
+              tabIndex={-1}
             >
               {editingId === reminder.id ? (
                 <form

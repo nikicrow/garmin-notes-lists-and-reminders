@@ -20,10 +20,185 @@ function jsonResponse(body: unknown, status = 200): Response {
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  window.localStorage.clear()
   window.history.replaceState(null, '', '/')
 })
 
 describe('App', () => {
+  it('enables notifications only after the user opts in', async () => {
+    window.history.replaceState(null, '', '/reminders')
+    const requestPermission = vi.fn().mockResolvedValue('granted')
+    const subscriptionJson = {
+      endpoint: 'https://push.example.test/subscriptions/browser-1',
+      expirationTime: null,
+      keys: { p256dh: 'browser-public-key', auth: 'browser-auth-secret' },
+    }
+    const browserSubscription = {
+      toJSON: () => subscriptionJson,
+      unsubscribe: vi.fn().mockResolvedValue(true),
+    }
+    const subscribe = vi.fn().mockResolvedValue(browserSubscription)
+    const getSubscription = vi
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(browserSubscription)
+    vi.stubGlobal('Notification', { permission: 'default', requestPermission })
+    vi.stubGlobal('PushManager', function PushManager() {})
+    vi.stubGlobal('navigator', {
+      serviceWorker: {
+        ready: Promise.resolve({
+          pushManager: {
+            getSubscription,
+            subscribe,
+          },
+        }),
+      },
+    })
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ username: 'niki' }))
+      .mockResolvedValueOnce(jsonResponse([]))
+      .mockResolvedValueOnce(
+        jsonResponse([
+          { id: '11111111-1111-1111-1111-111111111111', username: 'niki' },
+        ]),
+      )
+      .mockResolvedValueOnce(jsonResponse({ public_key: 'AQID' }))
+      .mockResolvedValueOnce(
+        jsonResponse({ id: 'subscription-id', ...subscriptionJson }, 201),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<App />)
+
+    const enable = await screen.findByRole('button', {
+      name: 'Enable notifications',
+    })
+    expect(requestPermission).not.toHaveBeenCalled()
+    fireEvent.click(enable)
+
+    expect(
+      await screen.findByText('Notifications are enabled on this device.'),
+    ).toHaveAttribute('role', 'status')
+    expect(requestPermission).toHaveBeenCalledOnce()
+    expect(subscribe).toHaveBeenCalledWith({
+      applicationServerKey: new Uint8Array([1, 2, 3]),
+      userVisibleOnly: true,
+    })
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      5,
+      '/api/v1/push-subscriptions',
+      expect.objectContaining({
+        body: JSON.stringify(subscriptionJson),
+        method: 'POST',
+      }),
+    )
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Disable notifications' }),
+    )
+
+    expect(
+      await screen.findByText('Notifications are disabled on this device.'),
+    ).toBeInTheDocument()
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      6,
+      '/api/v1/push-subscriptions/subscription-id',
+      expect.objectContaining({ method: 'DELETE' }),
+    )
+    expect(browserSubscription.unsubscribe).toHaveBeenCalledOnce()
+  })
+
+  it('explains when notification permission is denied', async () => {
+    window.history.replaceState(null, '', '/reminders')
+    const requestPermission = vi.fn().mockResolvedValue('denied')
+    vi.stubGlobal('Notification', { permission: 'default', requestPermission })
+    vi.stubGlobal('PushManager', function PushManager() {})
+    vi.stubGlobal('navigator', { serviceWorker: {} })
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ username: 'niki' }))
+      .mockResolvedValueOnce(jsonResponse([]))
+      .mockResolvedValueOnce(jsonResponse([]))
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<App />)
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Enable notifications' }),
+    )
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Notifications were not enabled. Allow them in your browser settings.',
+    )
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('explains when this browser cannot receive push notifications', async () => {
+    window.history.replaceState(null, '', '/reminders')
+    vi.stubGlobal('navigator', {})
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse({ username: 'niki' }))
+        .mockResolvedValueOnce(jsonResponse([]))
+        .mockResolvedValueOnce(jsonResponse([])),
+    )
+
+    render(<App />)
+
+    expect(
+      await screen.findByText(
+        'This browser does not support push notifications.',
+      ),
+    ).toHaveAttribute('role', 'status')
+    expect(
+      screen.queryByRole('button', { name: 'Enable notifications' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('focuses the reminder selected by a notification deep link', async () => {
+    const reminderId = '33333333-3333-3333-3333-333333333333'
+    const nikiId = '11111111-1111-1111-1111-111111111111'
+    window.history.replaceState(null, '', `/reminders?reminder=${reminderId}`)
+    const reminder = {
+      id: reminderId,
+      creator_user_id: nikiId,
+      title: 'School pickup',
+      detail: null,
+      due_at_utc: '2027-10-01T04:30:00Z',
+      source_timezone: 'Australia/Brisbane',
+      is_urgent: false,
+      status: 'pending',
+      created_at: '2026-09-04T10:00:00Z',
+      updated_at: '2026-09-04T10:00:00Z',
+      completed_at: null,
+      cancelled_at: null,
+      recipient_user_ids: [nikiId],
+      deliveries: [],
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse({ username: 'niki' }))
+        .mockResolvedValueOnce(jsonResponse([reminder]))
+        .mockResolvedValueOnce(
+          jsonResponse([{ id: nikiId, username: 'niki' }]),
+        ),
+    )
+
+    render(<App />)
+
+    const heading = await screen.findByRole('heading', {
+      name: 'School pickup',
+    })
+    await waitFor(() => expect(heading.closest('li')).toHaveFocus())
+    expect(window.location.search).toBe(`?reminder=${reminderId}`)
+  })
+
   it('creates a reminder for both selected household recipients', async () => {
     window.history.replaceState(null, '', '/reminders')
     const nikiId = '11111111-1111-1111-1111-111111111111'

@@ -71,6 +71,31 @@ def subscription_payload(
     }
 
 
+def test_authenticated_user_can_get_vapid_public_key(
+    isolated_database_url: str, monkeypatch: MonkeyPatch
+) -> None:
+    configure_app(monkeypatch, isolated_database_url)
+    monkeypatch.setenv("TUCK_VAPID_PUBLIC_KEY", "server-public-key")
+    monkeypatch.setenv("TUCK_VAPID_PRIVATE_KEY", "server-private-key")
+    monkeypatch.setenv("TUCK_VAPID_SUBJECT", "mailto:admin@example.com")
+    get_settings.cache_clear()
+    asyncio.run(create_accounts(isolated_database_url))
+
+    async def get_public_key() -> Response:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="https://test") as client:
+            await login(client, "niki")
+            return await client.get("/api/v1/push-subscriptions/vapid-public-key")
+
+    try:
+        response = asyncio.run(get_public_key())
+    finally:
+        get_settings.cache_clear()
+        get_session_factory.cache_clear()
+
+    assert response.status_code == 200
+    assert response.json() == {"public_key": "server-public-key"}
+
+
 def test_authenticated_user_can_register_push_subscription(
     isolated_database_url: str, monkeypatch: MonkeyPatch
 ) -> None:

@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tuck_api.auth import CurrentUser, Database
 from tuck_api.models import PushSubscription, User
+from tuck_api.settings import get_settings
 
 push_subscriptions_router = APIRouter(
     prefix="/api/v1/push-subscriptions", tags=["push subscriptions"]
@@ -152,6 +153,10 @@ class PushSubscriptionResponse(BaseModel):
     )
 
 
+class VapidPublicKeyResponse(BaseModel):
+    public_key: str
+
+
 def expiration_datetime(expiration_time: int | None) -> datetime | None:
     if expiration_time is None:
         return None
@@ -219,6 +224,17 @@ async def register_push_subscription_route(
     payload: PushSubscriptionUpsert, database: Database, user: CurrentUser
 ) -> PushSubscription:
     return await register_push_subscription(database, user, payload)
+
+
+@push_subscriptions_router.get("/vapid-public-key", response_model=VapidPublicKeyResponse)
+async def get_vapid_public_key(_user: CurrentUser) -> VapidPublicKeyResponse:
+    public_key = get_settings().vapid_public_key
+    if not public_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Push notifications are not configured",
+        )
+    return VapidPublicKeyResponse(public_key=public_key)
 
 
 @push_subscriptions_router.delete("/{subscription_id}", status_code=status.HTTP_204_NO_CONTENT)
