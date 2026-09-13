@@ -16,6 +16,8 @@ The compose file at the repository root defines all three services and is the si
 - Tailscale client authenticated and present on the host
 - Tailscale Serve enabled for the HTTP port you want to expose
 - A Tailnet machine (e.g. `fedora-1`) that is always on and reachable from the tailnet
+- A repository administrator who can create a short-lived self-hosted runner
+  registration token
 
 ## Quick start (local development)
 
@@ -126,9 +128,60 @@ Compose is configured with rotated json-file logging (10 MB max, 3 files) to avo
 
 `.github/workflows/deploy.yml` runs for pull requests and pushes to `main`. The CI job uses locked dependencies and runs Ruff formatting/linting, mypy, pytest against PostgreSQL 17, Prettier, ESLint, TypeScript checks, Vitest, Playwright, the production frontend build, and both deployment image builds.
 
-After CI succeeds on `main`, the deployment job runs on the production host. Configure a GitHub Actions self-hosted runner on `fedora-1` with the labels `Linux`, `X64`, and `tuck-production`. The runner account needs permission to use the host's Docker-compatible Compose installation.
+After CI succeeds on `main`, the deployment job runs on the production host.
+The job requires a GitHub Actions self-hosted runner with the default `Linux`
+and `X64` labels plus the custom `tuck-production` label. If no matching runner
+is online, GitHub leaves the job queued and eventually cancels it without
+executing any deployment step.
 
-Store production configuration outside the Actions workspace at `/etc/tuck/tuck.env`, readable only by the runner account. Set the repository variable `TUCK_ENV_FILE` if a different absolute path is required. The file must define the PostgreSQL values, a complete `TUCK_COMPOSE_DATABASE_URL` using the internal `postgres:5432` address, and `TUCK_ENVIRONMENT=production`; it must never be committed. The workflow rejects development defaults. Protect the GitHub `production` environment if deployment approval is desired.
+### One-time production-host bootstrap
+
+Create the production environment as the unprivileged account that will run
+deployments:
+
+```bash
+scripts/create-production-env.sh
+scripts/validate-production-config.sh "$HOME/.config/tuck/tuck.env"
+```
+
+The bootstrap creates `$HOME/.config/tuck/tuck.env` with mode `0600`, a random
+database password, production mode, and host ports `8180` (API) and `8181`
+(web). It refuses to overwrite an existing file. Override those ports only
+when necessary by setting `TUCK_API_PORT` or `TUCK_WEB_PORT` before running it.
+
+Next, a repository administrator creates a short-lived registration token in
+**Settings → Actions → Runners → New self-hosted runner**. On the production
+host, pass that token through the environment rather than storing it in a
+file or shell script:
+
+```bash
+read -rsp "Runner registration token: " TUCK_RUNNER_REGISTRATION_TOKEN
+export TUCK_RUNNER_REGISTRATION_TOKEN
+scripts/install-production-runner.sh \
+  https://github.com/OWNER/REPOSITORY
+unset TUCK_RUNNER_REGISTRATION_TOKEN
+```
+
+The installer downloads a pinned runner release, verifies its SHA-256 digest,
+registers it with `tuck-production`, and enables the
+`tuck-actions-runner.service` user unit. The deployment account must have
+permission to use the host's Docker-compatible Compose installation. User
+lingering must be enabled so the service remains active without an interactive
+login (`loginctl show-user "$USER" -p Linger`).
+
+By default, the workflow reads the runner-owned config at
+`$HOME/.config/tuck/tuck.env`. Set the repository variable `TUCK_ENV_FILE` to
+an absolute path if the host uses a different location. The file must define
+the PostgreSQL values, a complete `TUCK_COMPOSE_DATABASE_URL` using the
+internal `postgres:5432` address, and `TUCK_ENVIRONMENT=production`; it must
+never be committed. The workflow rejects development defaults. Protect the
+GitHub `production` environment if deployment approval is desired.
+
+Verify the runner before merging a deployment change:
+
+```bash
+systemctl --user status tuck-actions-runner.service
+```
 
 The deployment job rebuilds the API and web images from the verified revision, starts the Compose project (which applies Alembic migrations before Uvicorn), and verifies `/api/v1/ready` from inside the API container. GitHub Actions serializes deployments so two revisions cannot update the host concurrently.
 

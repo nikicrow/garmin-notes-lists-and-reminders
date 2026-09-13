@@ -103,9 +103,14 @@ jobs:
     environment: production
     timeout-minutes: 15
     env:
-      TUCK_ENV_FILE: ${{ vars.TUCK_ENV_FILE || '/etc/tuck/tuck.env' }}
+      TUCK_ENV_FILE: ${{ vars.TUCK_ENV_FILE }}
 
     steps:
+      - name: Resolve production configuration
+        run: |
+          TUCK_ENV_FILE="${TUCK_ENV_FILE:-$HOME/.config/tuck/tuck.env}"
+          echo "TUCK_ENV_FILE=$TUCK_ENV_FILE" >> "$GITHUB_ENV"
+
       - name: Check out verified revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

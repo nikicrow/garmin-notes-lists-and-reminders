@@ -112,6 +112,108 @@ def test_deploy_verifies_api_and_web_readiness() -> None:
     assert "wget --quiet --spider http://127.0.0.1:80/" in workflow
 
 
+def test_deploy_defaults_to_runner_owned_production_config() -> None:
+    workflow = Path(_REPO_ROOT, ".github", "workflows", "deploy.yml").read_text()
+
+    assert "TUCK_ENV_FILE: ${{ vars.TUCK_ENV_FILE }}" in workflow
+    assert 'TUCK_ENV_FILE="${TUCK_ENV_FILE:-$HOME/.config/tuck/tuck.env}"' in workflow
+    assert 'echo "TUCK_ENV_FILE=$TUCK_ENV_FILE" >> "$GITHUB_ENV"' in workflow
+
+
+def test_production_environment_bootstrap_creates_valid_private_file(tmp_path: Path) -> None:
+    env_file = tmp_path / "config" / "tuck.env"
+    bootstrap = Path(_REPO_ROOT, "scripts", "create-production-env.sh")
+
+    result = subprocess.run(
+        [bootstrap, env_file],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert env_file.stat().st_mode & 0o777 == 0o600
+    content = env_file.read_text()
+    assert "local-development-only" not in content
+    assert "TUCK_ENVIRONMENT=production" in content
+    assert "@postgres:5432/tuck" in content
+
+    validation = subprocess.run(
+        [_PRODUCTION_CONFIG_VALIDATOR, env_file],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert validation.returncode == 0, validation.stderr
+
+
+def test_production_environment_bootstrap_refuses_to_overwrite(tmp_path: Path) -> None:
+    env_file = tmp_path / "tuck.env"
+    env_file.write_text("keep-me")
+    bootstrap = Path(_REPO_ROOT, "scripts", "create-production-env.sh")
+
+    result = subprocess.run(
+        [bootstrap, env_file],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode != 0
+    assert env_file.read_text() == "keep-me"
+    assert "already exists" in result.stderr
+
+
+def test_runner_installer_pins_and_verifies_download() -> None:
+    installer = Path(_REPO_ROOT, "scripts", "install-production-runner.sh")
+    content = installer.read_text()
+
+    assert os.access(installer, os.X_OK)
+    assert "RUNNER_VERSION=" in content
+    assert "RUNNER_SHA256=" in content
+    assert "sha256sum --check" in content
+    assert "TUCK_RUNNER_REGISTRATION_TOKEN" in content
+    assert '--labels "tuck-production"' in content
+    assert 'readonly runner_user="$(id -un)"' in content
+    assert 'loginctl show-user "$runner_user" -p Linger --value' in content
+    assert "ExecStart=$install_dir/bin/runsvc.sh" in content
+    assert "systemctl --user enable --now tuck-actions-runner.service" in content
+
+    unset_position = content.index("unset TUCK_RUNNER_REGISTRATION_TOKEN")
+    download_position = content.index("curl --fail")
+    assert unset_position < download_position
+
+
+def test_production_environment_bootstrap_installs_atomically() -> None:
+    bootstrap = Path(_REPO_ROOT, "scripts", "create-production-env.sh").read_text()
+
+    assert 'ln -T -- "$temporary" "$target"' in bootstrap
+    assert 'ln -- "$temporary" "$target"' not in bootstrap
+    assert 'mv "$temporary" "$target"' not in bootstrap
+
+
+def test_production_environment_bootstrap_refuses_dangling_symlink(tmp_path: Path) -> None:
+    env_file = tmp_path / "tuck.env"
+    env_file.symlink_to(tmp_path / "missing.env")
+    bootstrap = Path(_REPO_ROOT, "scripts", "create-production-env.sh")
+
+    result = subprocess.run(
+        [bootstrap, env_file],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode != 0
+    assert env_file.is_symlink()
+    assert not env_file.resolve().exists()
+    assert "already exists" in result.stderr
+
+
 def test_production_config_rejects_development_defaults(tmp_path: Path) -> None:
     env_file = tmp_path / "production.env"
     env_file.write_text("TUCK_ENVIRONMENT=production\n")
