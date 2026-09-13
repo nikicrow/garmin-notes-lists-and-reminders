@@ -3,6 +3,7 @@
 ## Scope
 
 This runbook covers routine operation of Tuck on a single host inside the home tailnet. It assumes:
+
 - The host is authenticated to Tailscale and reachable from the tailnet.
 - The Tuck repository is deployed from a tagged or pinned release.
 - Services run via `docker compose` (or `podman-compose`) from the repository root.
@@ -11,13 +12,14 @@ This runbook covers routine operation of Tuck on a single host inside the home t
 
 ## System overview
 
-Tuck is three containers:
+Tuck is four containers:
 
 - `postgres` — PostgreSQL 17, holds all application data
 - `api` — FastAPI service, depends on postgres, runs migrations on startup
+- `reminder-worker` — durable reminder delivery, depends on postgres and outbound Web Push access
 - `web` — nginx, serves the PWA and proxies `/api/` to the `api` container
 
-All three are defined in `compose.yaml`. The repo root `compose.yaml` is the single source of truth.
+All four are defined in `compose.yaml`. The repo root `compose.yaml` is the single source of truth.
 
 ## Prerequisites for operation
 
@@ -34,6 +36,9 @@ These must be set before starting services. They are NOT in the repository:
 - `POSTGRES_PASSWORD` — PostgreSQL superuser password
 - `TUCK_COMPOSE_DATABASE_URL` — complete URL-encoded asyncpg DSN using `postgres:5432`
 - `TUCK_ENVIRONMENT=production`
+- `TUCK_VAPID_PUBLIC_KEY` — browser-facing application server key
+- `TUCK_VAPID_PRIVATE_KEY` — matching private key, stored only in the protected environment
+- `TUCK_VAPID_SUBJECT` — `mailto:` or `https:` operator contact URI
 - `POSTGRES_USER`, `POSTGRES_DB` — usually left at defaults (`tuck`)
 - `POSTGRES_PORT` — usually left at default (`5432`)
 - `API_PORT` — internal API port (default `8000`)
@@ -57,15 +62,17 @@ From the repository root:
 docker compose up -d
 ```
 
-This starts all three services. The API waits for PostgreSQL to become healthy, then runs migrations and starts the application server.
+This starts all four services. The API and reminder worker wait for PostgreSQL to become healthy. The API runs migrations before starting; the worker then processes durable due deliveries.
 
 To watch startup progress:
 
 ```bash
 docker compose logs -f api
+docker compose logs -f reminder-worker
 ```
 
 Look for:
+
 - `Running database migrations...`
 - `Starting application server...`
 - No error messages
@@ -78,7 +85,7 @@ Look for:
 docker compose ps
 ```
 
-All three services should show `healthy` in the `Status` column once started.
+All four services should show `healthy` in the `Status` column once started.
 
 ### Liveness and readiness
 
@@ -107,6 +114,10 @@ docker compose logs postgres | tail -20
 # API
 docker compose ps api
 docker compose logs api | tail -30
+
+# Reminder worker
+docker compose ps reminder-worker
+docker compose logs reminder-worker | tail -30
 
 # Web
 docker compose ps web
@@ -142,6 +153,13 @@ pnpm install
 pnpm build
 cd ..
 docker compose up -d web
+```
+
+Backend changes apply to both backend services:
+
+```bash
+docker compose build api reminder-worker
+docker compose up -d api reminder-worker
 ```
 
 ### Restart services
@@ -204,6 +222,8 @@ export POSTGRES_PASSWORD=<real-password>
 ```
 
 Store backups outside the compose volumes, on a separate disk or backup target.
+
+The backup is a full database dump and must contain `push_subscriptions`, `reminder_recipients`, and `notification_deliveries` as well as the core tables. Do not exclude these tables: they hold device registrations, recipient assignments, pending work, retry state, and delivery outcomes.
 
 ### Automated backups
 
@@ -279,11 +299,13 @@ Then verify the restored data before switching application configuration to poin
 If the system is down or data is lost:
 
 1. **Stop writes.** Prevent further changes while diagnosing.
+
    ```bash
    docker compose down
    ```
 
 2. **Assess what failed.**
+
    ```bash
    docker compose ps
    docker compose logs postgres
@@ -293,17 +315,20 @@ If the system is down or data is lost:
    ```
 
 3. **If PostgreSQL is broken but the volume is intact**, try restarting:
+
    ```bash
    docker compose up -d postgres
    docker compose logs -f postgres
    ```
 
 4. **If data is corrupted or lost**, restore from the latest backup:
+
    ```bash
    ./scripts/postgres-restore.sh --input /path/to/latest/backup.sql --yes
    ```
 
 5. **If the volume is lost**, rebuild and restore:
+
    ```bash
    docker compose down --volumes   # WARNING: destroys all local data
    docker compose up -d postgres
@@ -313,8 +338,10 @@ If the system is down or data is lost:
    ```
 
 6. **Verify the restore.**
-   - Check that all three services are healthy: `docker compose ps`
+   - Check that all four services are healthy: `docker compose ps`
    - Check that the API responds: `curl -fsS http://<host>:8000/api/v1/health`
+   - Run `docker compose exec -T reminder-worker tuck-reminder-worker --health-check`.
+   - Confirm the restored schema contains `push_subscriptions`, `reminder_recipients`, and `notification_deliveries`.
    - Log in and verify recent data is present.
 
 7. **Resume normal operation.**
@@ -324,11 +351,13 @@ If the system is down or data is lost:
 ### API fails to start, migration error
 
 Check migration logs:
+
 ```bash
 docker compose logs api
 ```
 
 Common causes:
+
 - PostgreSQL not ready yet — wait and retry.
 - Migration file missing or corrupted — verify the code checkout.
 - Database connection refused — check network and credentials.
@@ -336,6 +365,7 @@ Common causes:
 ### Database connection refused
 
 Check that PostgreSQL is healthy:
+
 ```bash
 docker compose ps postgres
 docker compose logs postgres
@@ -348,20 +378,69 @@ If PostgreSQL is not healthy, wait a few seconds and check again. If it stays un
 The web container proxies `/api/` to the `api` container. If the API is down or not yet started, nginx returns 502.
 
 Check:
+
 ```bash
 docker compose ps api
 docker compose logs api
 ```
 
+### Reminder delivery is delayed or failing
+
+Check worker health and outcome counters without exposing subscription endpoints:
+
+```bash
+docker compose ps reminder-worker
+docker compose exec -T reminder-worker tuck-reminder-worker --health-check
+docker compose logs --since 30m reminder-worker
+```
+
+`network_error` indicates DNS, outbound TCP 443, provider availability, or a timeout. `http_404` and `http_410` disable expired subscriptions; the affected browser must disable and re-enable notifications. `no_subscription` means the recipient has no active device subscription. Confirm the reminder is still `pending`, because completed or cancelled reminders are intentionally not sent.
+
+Retryable deliveries run automatically after `next_attempt_at`. To process currently due work once after correcting an outage, use:
+
+```bash
+docker compose exec -T reminder-worker tuck-reminder-worker --once
+```
+
+Do not restart-loop the worker, edit `sent` deliveries, or delete delivery rows: the unique recipient/reminder record is the duplicate-send guard. A deliberate replay of a terminal `failed` delivery requires a database backup, a recorded delivery ID, a verified active subscription and pending reminder, and a transaction that resets only that row to `retryable`, clears its claim fields, sets `next_attempt_at` to the current time, and resets `attempt_count` to zero. Run one worker pass and inspect the resulting status before replaying another row.
+
+Use an interactive `psql` session so the selected row and affected-row count are visible before commit:
+
+```sql
+BEGIN;
+SELECT id, reminder_id, recipient_user_id, status, attempt_count, last_error_code
+FROM notification_deliveries
+WHERE id = '<delivery-id>'
+FOR UPDATE;
+
+UPDATE notification_deliveries
+SET status = 'retryable',
+    attempt_count = 0,
+    next_attempt_at = now(),
+    claimed_at = NULL,
+    claimed_by = NULL,
+    sent_at = NULL
+WHERE id = '<delivery-id>' AND status = 'failed';
+-- Stop here and inspect the selected row and UPDATE count.
+```
+
+Run `COMMIT;` only when the selected row is correct and `UPDATE` reports exactly one row; otherwise run `ROLLBACK;`. The prior `last_error_code` remains visible until the replay records its outcome.
+
+### VAPID rotation
+
+Generate a replacement pair in a protected directory, update `TUCK_VAPID_PUBLIC_KEY`, `TUCK_VAPID_PRIVATE_KEY`, and `TUCK_VAPID_SUBJECT` together, then recreate `api` and `reminder-worker`. Verify API readiness and worker health. Each browser must disable and re-enable notifications to register with the new public key. Never log or commit either private key.
+
 ### Disk full
 
 Check disk usage:
+
 ```bash
 df -h
 docker system df
 ```
 
 If disk is full:
+
 - Clean old backups.
 - Prune unused images: `docker image prune -f`
 - Prune stopped containers: `docker container prune -f`
@@ -370,6 +449,7 @@ If disk is full:
 ### Backup script cannot connect
 
 Verify the target database is reachable:
+
 ```bash
 psql -h <host> -p <port> -U <user> -d <database> -c "SELECT 1;"
 ```
@@ -389,6 +469,7 @@ The compose file binds service ports to `127.0.0.1` by default. To expose to the
 ## Port mapping reference
 
 Default internal ports:
+
 - PostgreSQL: 5432
 - API: 8000
 - Web: 8080
@@ -400,10 +481,12 @@ The container-internal ports are fixed by the compose file and Dockerfile. Do no
 ## Monitoring suggestions
 
 Minimum viable monitoring:
-- Service health: `docker compose ps` shows health status.
+
+- Service health: `docker compose ps` shows health status, including worker database/VAPID readiness.
 - Disk space: alert before disk fills.
 - Backup freshness: alert if the latest backup is older than expected.
 - API responsiveness: probe `GET /api/v1/health` and `GET /api/v1/ready` regularly.
+- Delivery health: alert on repeated `retryable`/`failed` worker counters and stale due work.
 
 ## Support notes for this repository
 

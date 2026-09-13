@@ -20,14 +20,351 @@ function jsonResponse(body: unknown, status = 200): Response {
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  window.localStorage.clear()
   window.history.replaceState(null, '', '/')
 })
 
 describe('App', () => {
+  it('enables notifications only after the user opts in', async () => {
+    window.history.replaceState(null, '', '/reminders')
+    const requestPermission = vi.fn().mockResolvedValue('granted')
+    const subscriptionJson = {
+      endpoint: 'https://push.example.test/subscriptions/browser-1',
+      expirationTime: null,
+      keys: { p256dh: 'browser-public-key', auth: 'browser-auth-secret' },
+    }
+    const browserSubscription = {
+      toJSON: () => subscriptionJson,
+      unsubscribe: vi.fn().mockResolvedValue(true),
+    }
+    const subscribe = vi.fn().mockResolvedValue(browserSubscription)
+    const getSubscription = vi
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(browserSubscription)
+    vi.stubGlobal('Notification', { permission: 'default', requestPermission })
+    vi.stubGlobal('PushManager', function PushManager() {})
+    vi.stubGlobal('navigator', {
+      serviceWorker: {
+        ready: Promise.resolve({
+          pushManager: {
+            getSubscription,
+            subscribe,
+          },
+        }),
+      },
+    })
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ username: 'niki' }))
+      .mockResolvedValueOnce(jsonResponse([]))
+      .mockResolvedValueOnce(
+        jsonResponse([
+          { id: '11111111-1111-1111-1111-111111111111', username: 'niki' },
+        ]),
+      )
+      .mockResolvedValueOnce(jsonResponse({ public_key: 'AQID' }))
+      .mockResolvedValueOnce(
+        jsonResponse({ id: 'subscription-id', ...subscriptionJson }, 201),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<App />)
+
+    const enable = await screen.findByRole('button', {
+      name: 'Enable notifications',
+    })
+    expect(requestPermission).not.toHaveBeenCalled()
+    fireEvent.click(enable)
+
+    expect(
+      await screen.findByText('Notifications are enabled on this device.'),
+    ).toHaveAttribute('role', 'status')
+    expect(requestPermission).toHaveBeenCalledOnce()
+    expect(subscribe).toHaveBeenCalledWith({
+      applicationServerKey: new Uint8Array([1, 2, 3]),
+      userVisibleOnly: true,
+    })
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      5,
+      '/api/v1/push-subscriptions',
+      expect.objectContaining({
+        body: JSON.stringify(subscriptionJson),
+        method: 'POST',
+      }),
+    )
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Disable notifications' }),
+    )
+
+    expect(
+      await screen.findByText('Notifications are disabled on this device.'),
+    ).toBeInTheDocument()
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      6,
+      '/api/v1/push-subscriptions/subscription-id',
+      expect.objectContaining({ method: 'DELETE' }),
+    )
+    expect(browserSubscription.unsubscribe).toHaveBeenCalledOnce()
+  })
+
+  it('explains when notification permission is denied', async () => {
+    window.history.replaceState(null, '', '/reminders')
+    const requestPermission = vi.fn().mockResolvedValue('denied')
+    vi.stubGlobal('Notification', { permission: 'default', requestPermission })
+    vi.stubGlobal('PushManager', function PushManager() {})
+    vi.stubGlobal('navigator', { serviceWorker: {} })
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ username: 'niki' }))
+      .mockResolvedValueOnce(jsonResponse([]))
+      .mockResolvedValueOnce(jsonResponse([]))
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<App />)
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Enable notifications' }),
+    )
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Notifications were not enabled. Allow them in your browser settings.',
+    )
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('explains when this browser cannot receive push notifications', async () => {
+    window.history.replaceState(null, '', '/reminders')
+    vi.stubGlobal('navigator', {})
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse({ username: 'niki' }))
+        .mockResolvedValueOnce(jsonResponse([]))
+        .mockResolvedValueOnce(jsonResponse([])),
+    )
+
+    render(<App />)
+
+    expect(
+      await screen.findByText(
+        'This browser does not support push notifications.',
+      ),
+    ).toHaveAttribute('role', 'status')
+    expect(
+      screen.queryByRole('button', { name: 'Enable notifications' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('focuses the reminder selected by a notification deep link', async () => {
+    const reminderId = '33333333-3333-3333-3333-333333333333'
+    const nikiId = '11111111-1111-1111-1111-111111111111'
+    window.history.replaceState(null, '', `/reminders?reminder=${reminderId}`)
+    const reminder = {
+      id: reminderId,
+      creator_user_id: nikiId,
+      title: 'School pickup',
+      detail: null,
+      due_at_utc: '2027-10-01T04:30:00Z',
+      source_timezone: 'Australia/Brisbane',
+      is_urgent: false,
+      status: 'pending',
+      created_at: '2026-09-04T10:00:00Z',
+      updated_at: '2026-09-04T10:00:00Z',
+      completed_at: null,
+      cancelled_at: null,
+      recipient_user_ids: [nikiId],
+      deliveries: [],
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse({ username: 'niki' }))
+        .mockResolvedValueOnce(jsonResponse([reminder]))
+        .mockResolvedValueOnce(
+          jsonResponse([{ id: nikiId, username: 'niki' }]),
+        ),
+    )
+
+    render(<App />)
+
+    const heading = await screen.findByRole('heading', {
+      name: 'School pickup',
+    })
+    await waitFor(() => expect(heading.closest('li')).toHaveFocus())
+    expect(window.location.search).toBe(`?reminder=${reminderId}`)
+  })
+
+  it('creates a reminder for both selected household recipients', async () => {
+    window.history.replaceState(null, '', '/reminders')
+    const nikiId = '11111111-1111-1111-1111-111111111111'
+    const benId = '22222222-2222-2222-2222-222222222222'
+    const created = {
+      id: '33333333-3333-3333-3333-333333333333',
+      creator_user_id: nikiId,
+      title: 'School pickup',
+      detail: null,
+      due_at_utc: '2027-10-01T04:30:00Z',
+      source_timezone: 'Australia/Brisbane',
+      is_urgent: false,
+      status: 'pending',
+      created_at: '2026-09-04T10:00:00Z',
+      updated_at: '2026-09-04T10:00:00Z',
+      completed_at: null,
+      cancelled_at: null,
+      recipient_user_ids: [nikiId, benId],
+      deliveries: [],
+    }
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ username: 'niki' }))
+      .mockResolvedValueOnce(jsonResponse([]))
+      .mockResolvedValueOnce(
+        jsonResponse([
+          { id: benId, username: 'ben' },
+          { id: nikiId, username: 'niki' },
+        ]),
+      )
+      .mockResolvedValueOnce(jsonResponse(created, 201))
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<App />)
+
+    fireEvent.change(await screen.findByLabelText('Reminder title'), {
+      target: { value: 'School pickup' },
+    })
+    fireEvent.change(screen.getByLabelText('Due date and time'), {
+      target: { value: '2027-10-01T14:30' },
+    })
+    fireEvent.change(screen.getByLabelText('Timezone'), {
+      target: { value: 'Australia/Brisbane' },
+    })
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Ben' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add reminder' }))
+
+    expect(
+      await screen.findByText('Recipients: Ben and Niki'),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: 'Niki' })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: 'Ben' })).not.toBeChecked()
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      '/api/v1/reminders',
+      expect.objectContaining({
+        body: JSON.stringify({
+          title: 'School pickup',
+          detail: null,
+          due_at_utc: '2027-10-01T04:30:00.000Z',
+          source_timezone: 'Australia/Brisbane',
+          is_urgent: false,
+          recipient_user_ids: [nikiId, benId],
+        }),
+        method: 'POST',
+      }),
+    )
+  })
+
+  it('shows forbidden feedback without losing the reminder draft', async () => {
+    window.history.replaceState(null, '', '/reminders')
+    const nikiId = '11111111-1111-1111-1111-111111111111'
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse({ username: 'niki' }))
+        .mockResolvedValueOnce(jsonResponse([]))
+        .mockResolvedValueOnce(jsonResponse([{ id: nikiId, username: 'niki' }]))
+        .mockResolvedValueOnce(
+          jsonResponse({ detail: 'Reminder recipients are forbidden' }, 403),
+        ),
+    )
+
+    render(<App />)
+
+    const title = await screen.findByLabelText('Reminder title')
+    fireEvent.change(title, { target: { value: 'Private appointment' } })
+    fireEvent.change(screen.getByLabelText('Due date and time'), {
+      target: { value: '2027-10-01T14:30' },
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Add reminder' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Reminder recipients are forbidden',
+    )
+    expect(title).toHaveValue('Private appointment')
+    expect(screen.getByRole('checkbox', { name: 'Niki' })).toBeChecked()
+    expect(screen.getByRole('button', { name: 'Add reminder' })).toBeEnabled()
+  })
+
+  it('presents received reminders read-only with delivery history', async () => {
+    window.history.replaceState(null, '', '/reminders')
+    const nikiId = '11111111-1111-1111-1111-111111111111'
+    const benId = '22222222-2222-2222-2222-222222222222'
+    const received = {
+      id: '33333333-3333-3333-3333-333333333333',
+      creator_user_id: nikiId,
+      title: 'School pickup',
+      detail: null,
+      due_at_utc: '2027-10-01T04:30:00Z',
+      source_timezone: 'Australia/Brisbane',
+      is_urgent: false,
+      status: 'pending',
+      created_at: '2026-09-04T10:00:00Z',
+      updated_at: '2026-09-04T10:00:00Z',
+      completed_at: null,
+      cancelled_at: null,
+      recipient_user_ids: [benId],
+      deliveries: [
+        {
+          recipient_user_id: benId,
+          status: 'retryable',
+          attempt_count: 2,
+          next_attempt_at: '2027-10-01T04:35:00Z',
+          sent_at: null,
+          last_error_code: 'push_unavailable',
+          updated_at: '2027-10-01T04:31:00Z',
+        },
+      ],
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse({ username: 'ben' }))
+        .mockResolvedValueOnce(jsonResponse([received]))
+        .mockResolvedValueOnce(
+          jsonResponse([
+            { id: benId, username: 'ben' },
+            { id: nikiId, username: 'niki' },
+          ]),
+        ),
+    )
+
+    render(<App />)
+
+    expect(await screen.findByText('Recipients: Ben')).toBeInTheDocument()
+    expect(
+      screen.getByText('Delivery to Ben: Retry scheduled'),
+    ).toBeInTheDocument()
+    expect(screen.getByText('2 attempts')).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Edit School pickup' }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Complete School pickup' }),
+    ).not.toBeInTheDocument()
+    expect(screen.getByText('Received from Niki')).toBeInTheDocument()
+  })
+
   it('submits a reminder in the selected timezone', async () => {
     window.history.replaceState(null, '', '/reminders')
     const created = {
       id: '11111111-1111-1111-1111-111111111111',
+      creator_user_id: '11111111-1111-1111-1111-111111111111',
       title: 'Dentist',
       detail: 'Bring paperwork',
       due_at_utc: '2027-10-01T04:30:00Z',
@@ -38,11 +375,19 @@ describe('App', () => {
       updated_at: '2026-09-04T10:00:00Z',
       completed_at: null,
       cancelled_at: null,
+      recipient_user_ids: ['11111111-1111-1111-1111-111111111111'],
+      deliveries: [],
     }
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(jsonResponse({ username: 'niki' }))
       .mockResolvedValueOnce(jsonResponse([]))
+      .mockResolvedValueOnce(
+        jsonResponse([
+          { id: '22222222-2222-2222-2222-222222222222', username: 'ben' },
+          { id: '11111111-1111-1111-1111-111111111111', username: 'niki' },
+        ]),
+      )
       .mockResolvedValueOnce(jsonResponse(created, 201))
     vi.stubGlobal('fetch', fetchMock)
 
@@ -68,10 +413,10 @@ describe('App', () => {
       screen.getByText('Urgent', { selector: 'strong' }),
     ).toBeInTheDocument()
     expect(
-      screen.getByText('Notifications are not delivered in Phase 1.'),
+      screen.getByText('Delivery status updates after reminders are due.'),
     ).toBeInTheDocument()
     expect(fetchMock).toHaveBeenNthCalledWith(
-      3,
+      4,
       '/api/v1/reminders',
       expect.objectContaining({
         body: JSON.stringify({
@@ -80,6 +425,7 @@ describe('App', () => {
           due_at_utc: '2027-10-01T04:30:00.000Z',
           source_timezone: 'Australia/Brisbane',
           is_urgent: true,
+          recipient_user_ids: ['11111111-1111-1111-1111-111111111111'],
         }),
         credentials: 'include',
         method: 'POST',
@@ -91,6 +437,7 @@ describe('App', () => {
     window.history.replaceState(null, '', '/reminders')
     const created = {
       id: '11111111-1111-1111-1111-111111111111',
+      creator_user_id: '11111111-1111-1111-1111-111111111111',
       title: 'Dentist',
       detail: null,
       due_at_utc: '2027-10-01T04:30:00Z',
@@ -101,6 +448,8 @@ describe('App', () => {
       updated_at: '2026-09-04T10:00:00Z',
       completed_at: null,
       cancelled_at: null,
+      recipient_user_ids: ['11111111-1111-1111-1111-111111111111'],
+      deliveries: [],
     }
     let resolveInitialList!: (response: Response) => void
     const initialList = new Promise<Response>((resolve) => {
@@ -110,6 +459,11 @@ describe('App', () => {
       .fn()
       .mockResolvedValueOnce(jsonResponse({ username: 'niki' }))
       .mockReturnValueOnce(initialList)
+      .mockResolvedValueOnce(
+        jsonResponse([
+          { id: '11111111-1111-1111-1111-111111111111', username: 'niki' },
+        ]),
+      )
       .mockResolvedValueOnce(jsonResponse(created, 201))
     vi.stubGlobal('fetch', fetchMock)
 
@@ -136,6 +490,7 @@ describe('App', () => {
     window.history.replaceState(null, '', '/reminders')
     const created = {
       id: '11111111-1111-1111-1111-111111111111',
+      creator_user_id: '11111111-1111-1111-1111-111111111111',
       title: 'Dentist',
       detail: null,
       due_at_utc: '2027-10-01T04:30:00Z',
@@ -146,6 +501,8 @@ describe('App', () => {
       updated_at: '2026-09-04T10:00:00Z',
       completed_at: null,
       cancelled_at: null,
+      recipient_user_ids: ['11111111-1111-1111-1111-111111111111'],
+      deliveries: [],
     }
     let resolveInitialList!: (response: Response) => void
     let resolveCreate!: (response: Response) => void
@@ -156,6 +513,11 @@ describe('App', () => {
         new Promise<Response>((resolve) => {
           resolveInitialList = resolve
         }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse([
+          { id: '11111111-1111-1111-1111-111111111111', username: 'niki' },
+        ]),
       )
       .mockReturnValueOnce(
         new Promise<Response>((resolve) => {
@@ -176,7 +538,7 @@ describe('App', () => {
       target: { value: 'Australia/Brisbane' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Add reminder' }))
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4))
 
     await act(async () => resolveInitialList(jsonResponse([created])))
     expect(await screen.findByText('Dentist')).toBeInTheDocument()
@@ -189,6 +551,7 @@ describe('App', () => {
     window.history.replaceState(null, '', '/reminders')
     const appointment = {
       id: '11111111-1111-1111-1111-111111111111',
+      creator_user_id: '11111111-1111-1111-1111-111111111111',
       title: 'Appointment',
       detail: null,
       due_at_utc: '2027-10-01T04:30:00Z',
@@ -199,6 +562,8 @@ describe('App', () => {
       updated_at: '2026-09-04T10:00:00Z',
       completed_at: null,
       cancelled_at: null,
+      recipient_user_ids: ['11111111-1111-1111-1111-111111111111'],
+      deliveries: [],
     }
     const cancelMe = {
       ...appointment,
@@ -209,6 +574,11 @@ describe('App', () => {
       .fn()
       .mockResolvedValueOnce(jsonResponse({ username: 'niki' }))
       .mockResolvedValueOnce(jsonResponse([appointment, cancelMe]))
+      .mockResolvedValueOnce(
+        jsonResponse([
+          { id: '11111111-1111-1111-1111-111111111111', username: 'niki' },
+        ]),
+      )
       .mockResolvedValueOnce(
         jsonResponse({ ...appointment, title: 'Dentist', is_urgent: true }),
       )
@@ -259,7 +629,7 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
     expect(await screen.findByText('Dentist')).toBeInTheDocument()
     expect(fetchMock).toHaveBeenNthCalledWith(
-      3,
+      4,
       `/api/v1/reminders/${appointment.id}`,
       expect.objectContaining({
         body: JSON.stringify({
@@ -276,9 +646,9 @@ describe('App', () => {
       target: { value: '2027-10-01T14:45' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Confirm snooze' }))
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5))
     expect(fetchMock).toHaveBeenNthCalledWith(
-      4,
+      5,
       `/api/v1/reminders/${appointment.id}/snooze`,
       expect.objectContaining({
         body: JSON.stringify({ due_at_utc: '2027-10-01T04:45:00.000Z' }),
@@ -294,9 +664,9 @@ describe('App', () => {
       target: { value: 'Australia/Sydney' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Confirm reschedule' }))
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(6))
     expect(fetchMock).toHaveBeenNthCalledWith(
-      5,
+      6,
       `/api/v1/reminders/${appointment.id}/reschedule`,
       expect.objectContaining({
         body: JSON.stringify({
@@ -316,7 +686,7 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cancel Cancel me' }))
     expect(await screen.findByText('cancelled')).toBeInTheDocument()
     expect(fetchMock).toHaveBeenNthCalledWith(
-      7,
+      8,
       `/api/v1/reminders/${cancelMe.id}/cancel`,
       expect.objectContaining({ method: 'POST' }),
     )
