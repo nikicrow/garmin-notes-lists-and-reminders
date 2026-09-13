@@ -165,14 +165,16 @@ Create the production environment as the unprivileged account that will run
 deployments:
 
 ```bash
-scripts/create-production-env.sh
+TUCK_VAPID_SUBJECT=mailto:operator@example.com scripts/create-production-env.sh
 scripts/validate-production-config.sh "$HOME/.config/tuck/tuck.env"
 ```
 
 The bootstrap creates `$HOME/.config/tuck/tuck.env` with mode `0600`, a random
-database password, production mode, and host ports `8180` (API) and `8181`
-(web). It refuses to overwrite an existing file. Override those ports only
-when necessary by setting `TUCK_API_PORT` or `TUCK_WEB_PORT` before running it.
+database password, a fresh VAPID key pair, production mode, and host ports
+`8180` (API) and `8181` (web). Set `TUCK_VAPID_SUBJECT` to a real operator
+contact URI. The script refuses to overwrite an existing file. Override the
+ports only when necessary by setting `TUCK_API_PORT` or `TUCK_WEB_PORT` before
+running it.
 
 Next, a repository administrator creates a short-lived registration token in
 **Settings → Actions → Runners → New self-hosted runner**. On the production

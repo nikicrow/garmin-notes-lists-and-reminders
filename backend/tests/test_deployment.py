@@ -169,6 +169,7 @@ def test_production_environment_bootstrap_creates_valid_private_file(tmp_path: P
         [bootstrap, env_file],
         cwd=_REPO_ROOT,
         capture_output=True,
+        env={**os.environ, "TUCK_VAPID_SUBJECT": "mailto:operator@example.invalid"},
         text=True,
         timeout=30,
     )
@@ -179,6 +180,9 @@ def test_production_environment_bootstrap_creates_valid_private_file(tmp_path: P
     assert "local-development-only" not in content
     assert "TUCK_ENVIRONMENT=production" in content
     assert "@postgres:5432/tuck" in content
+    assert "TUCK_VAPID_PUBLIC_KEY=" in content
+    assert "TUCK_VAPID_PRIVATE_KEY='-----BEGIN EC PRIVATE KEY-----" in content
+    assert "TUCK_VAPID_SUBJECT=mailto:operator@example.invalid" in content
 
     validation = subprocess.run(
         [_PRODUCTION_CONFIG_VALIDATOR, env_file],
@@ -188,6 +192,24 @@ def test_production_environment_bootstrap_creates_valid_private_file(tmp_path: P
         timeout=30,
     )
     assert validation.returncode == 0, validation.stderr
+
+
+def test_production_environment_bootstrap_requires_vapid_subject(tmp_path: Path) -> None:
+    env_file = tmp_path / "tuck.env"
+    bootstrap = Path(_REPO_ROOT, "scripts", "create-production-env.sh")
+
+    result = subprocess.run(
+        [bootstrap, env_file],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        env={key: value for key, value in os.environ.items() if key != "TUCK_VAPID_SUBJECT"},
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode != 0
+    assert not env_file.exists()
+    assert "TUCK_VAPID_SUBJECT must start with mailto: or https://" in result.stderr
 
 
 def test_production_environment_bootstrap_refuses_to_overwrite(tmp_path: Path) -> None:
