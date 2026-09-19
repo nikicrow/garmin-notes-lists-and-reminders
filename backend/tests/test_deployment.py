@@ -68,6 +68,47 @@ def test_compose_contains_web_service() -> None:
     assert "web" in services
 
 
+def test_compose_runs_reminder_worker_with_database_readiness_healthcheck() -> None:
+    services_result = subprocess.run(
+        _compose_cmd("config", "--services"),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    config_result = subprocess.run(
+        _compose_cmd("config"),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert services_result.returncode == 0, services_result.stderr
+    assert "reminder-worker" in services_result.stdout.strip().split("\n")
+    assert config_result.returncode == 0, config_result.stderr
+    assert "tuck-reminder-worker" in config_result.stdout
+    assert "--health-check" in config_result.stdout
+
+
+def test_compose_injects_complete_vapid_settings_into_api_and_worker() -> None:
+    result = subprocess.run(
+        _compose_cmd("config"),
+        env=os.environ
+        | {
+            "TUCK_VAPID_PUBLIC_KEY": "test-public-key",
+            "TUCK_VAPID_PRIVATE_KEY": "test-private-key",
+            "TUCK_VAPID_SUBJECT": "mailto:operator@example.invalid",
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.count("TUCK_VAPID_PUBLIC_KEY: test-public-key") == 2
+    assert result.stdout.count("TUCK_VAPID_PRIVATE_KEY: test-private-key") == 2
+    assert result.stdout.count("TUCK_VAPID_SUBJECT: mailto:operator@example.invalid") == 2
+
+
 def test_compose_postgres_has_healthcheck() -> None:
     """Validate that PostgreSQL service defines a healthcheck."""
     result = subprocess.run(
@@ -128,6 +169,7 @@ def test_production_environment_bootstrap_creates_valid_private_file(tmp_path: P
         [bootstrap, env_file],
         cwd=_REPO_ROOT,
         capture_output=True,
+        env={**os.environ, "TUCK_VAPID_SUBJECT": "mailto:operator@example.invalid"},
         text=True,
         timeout=30,
     )
@@ -138,6 +180,9 @@ def test_production_environment_bootstrap_creates_valid_private_file(tmp_path: P
     assert "local-development-only" not in content
     assert "TUCK_ENVIRONMENT=production" in content
     assert "@postgres:5432/tuck" in content
+    assert "TUCK_VAPID_PUBLIC_KEY=" in content
+    assert "TUCK_VAPID_PRIVATE_KEY='-----BEGIN EC PRIVATE KEY-----" in content
+    assert "TUCK_VAPID_SUBJECT=mailto:operator@example.invalid" in content
 
     validation = subprocess.run(
         [_PRODUCTION_CONFIG_VALIDATOR, env_file],
@@ -147,6 +192,24 @@ def test_production_environment_bootstrap_creates_valid_private_file(tmp_path: P
         timeout=30,
     )
     assert validation.returncode == 0, validation.stderr
+
+
+def test_production_environment_bootstrap_requires_vapid_subject(tmp_path: Path) -> None:
+    env_file = tmp_path / "tuck.env"
+    bootstrap = Path(_REPO_ROOT, "scripts", "create-production-env.sh")
+
+    result = subprocess.run(
+        [bootstrap, env_file],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        env={key: value for key, value in os.environ.items() if key != "TUCK_VAPID_SUBJECT"},
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode != 0
+    assert not env_file.exists()
+    assert "TUCK_VAPID_SUBJECT must start with mailto: or https://" in result.stderr
 
 
 def test_production_environment_bootstrap_refuses_to_overwrite(tmp_path: Path) -> None:
@@ -230,6 +293,31 @@ def test_production_config_rejects_development_defaults(tmp_path: Path) -> None:
     assert "development database password" in result.stderr
 
 
+def test_production_config_rejects_missing_vapid_settings(tmp_path: Path) -> None:
+    env_file = tmp_path / "production.env"
+    env_file.write_text(
+        "\n".join(
+            (
+                "POSTGRES_PASSWORD=test-production-password",
+                "TUCK_COMPOSE_DATABASE_URL=postgresql+asyncpg://tuck:"
+                "test-production-password@postgres:5432/tuck",
+                "TUCK_ENVIRONMENT=production",
+            )
+        )
+    )
+
+    result = subprocess.run(
+        [_PRODUCTION_CONFIG_VALIDATOR, str(env_file)],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode != 0
+    assert "VAPID settings must all be non-empty" in result.stderr
+
+
 def test_production_config_accepts_explicit_production_values(tmp_path: Path) -> None:
     env_file = tmp_path / "production.env"
     env_file.write_text(
@@ -239,6 +327,9 @@ def test_production_config_accepts_explicit_production_values(tmp_path: Path) ->
                 "TUCK_COMPOSE_DATABASE_URL=postgresql+asyncpg://tuck:"
                 "test-production-password@postgres:5432/tuck",
                 "TUCK_ENVIRONMENT=production",
+                "TUCK_VAPID_PUBLIC_KEY=test-public-key",
+                "TUCK_VAPID_PRIVATE_KEY=test-private-key",
+                "TUCK_VAPID_SUBJECT=mailto:operator@example.invalid",
             )
         )
     )

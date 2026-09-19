@@ -13,6 +13,7 @@
 # Required environment variables (see .env.example and docs/deployment.md):
 #   POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB, POSTGRES_PORT
 #   TUCK_COMPOSE_DATABASE_URL, TUCK_ENVIRONMENT
+#   TUCK_VAPID_PUBLIC_KEY, TUCK_VAPID_PRIVATE_KEY, TUCK_VAPID_SUBJECT
 #
 # Secrets are injected via a .env file or host environment. Never commit .env
 # or any file containing real credentials. For production, consider Docker
@@ -57,6 +58,9 @@ services:
     environment:
       TUCK_DATABASE_URL: ${TUCK_COMPOSE_DATABASE_URL:-postgresql+asyncpg://tuck:local-development-only@postgres:5432/tuck}
       TUCK_ENVIRONMENT: ${TUCK_ENVIRONMENT:-development}
+      TUCK_VAPID_PRIVATE_KEY: ${TUCK_VAPID_PRIVATE_KEY:-}
+      TUCK_VAPID_PUBLIC_KEY: ${TUCK_VAPID_PUBLIC_KEY:-}
+      TUCK_VAPID_SUBJECT: ${TUCK_VAPID_SUBJECT:-}
     ports:
       - "127.0.0.1:${API_PORT:-8000}:8000"
     command:
@@ -78,6 +82,38 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  reminder-worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      TUCK_DATABASE_URL: ${TUCK_COMPOSE_DATABASE_URL:-postgresql+asyncpg://tuck:local-development-only@postgres:5432/tuck}
+      TUCK_ENVIRONMENT: ${TUCK_ENVIRONMENT:-development}
+      TUCK_NOTIFICATION_WORKER_BATCH_SIZE: ${TUCK_NOTIFICATION_WORKER_BATCH_SIZE:-100}
+      TUCK_NOTIFICATION_WORKER_LEASE_SECONDS: ${TUCK_NOTIFICATION_WORKER_LEASE_SECONDS:-300}
+      TUCK_NOTIFICATION_WORKER_MAX_ATTEMPTS: ${TUCK_NOTIFICATION_WORKER_MAX_ATTEMPTS:-5}
+      TUCK_NOTIFICATION_WORKER_POLL_SECONDS: ${TUCK_NOTIFICATION_WORKER_POLL_SECONDS:-5}
+      TUCK_VAPID_PRIVATE_KEY: ${TUCK_VAPID_PRIVATE_KEY:-}
+      TUCK_VAPID_PUBLIC_KEY: ${TUCK_VAPID_PUBLIC_KEY:-}
+      TUCK_VAPID_SUBJECT: ${TUCK_VAPID_SUBJECT:-}
+    command: ["tuck-reminder-worker"]
+    healthcheck:
+      test: ["CMD", "tuck-reminder-worker", "--health-check"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    stop_grace_period: 30s
     restart: unless-stopped
     logging:
       driver: json-file

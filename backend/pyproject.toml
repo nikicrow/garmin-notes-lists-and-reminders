@@ -8,12 +8,14 @@ dependencies = [
   "asyncpg>=0.30,<1",
   "fastapi>=0.116,<1",
   "pydantic-settings>=2.10,<3",
+  "pywebpush>=2.0,<3",
   "sqlalchemy[asyncio]>=2.0,<3",
   "uvicorn[standard]>=0.35,<1",
 ]
 
 [project.scripts]
 tuck-bootstrap-user = "tuck_api.bootstrap_user:main"
+tuck-reminder-worker = "tuck_api.notification_worker:main"
 
 [dependency-groups]
 dev = [

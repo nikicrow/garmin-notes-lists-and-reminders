@@ -1,8 +1,10 @@
+from __future__ import annotations
+
 from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import DateTime, Uuid, func
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from tuck_api import schema
 
@@ -104,6 +106,62 @@ class Reminder(Base):
     status: Mapped[str]
     completed_at: Mapped[datetime | None]
     cancelled_at: Mapped[datetime | None]
+    recipient_links: Mapped[list[ReminderRecipient]] = relationship(
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        order_by="ReminderRecipient.user_id",
+    )
+    deliveries: Mapped[list[NotificationDelivery]] = relationship(
+        lazy="selectin",
+        order_by="NotificationDelivery.recipient_user_id",
+        primaryjoin="Reminder.id == foreign(NotificationDelivery.reminder_id)",
+        viewonly=True,
+    )
+    id: Mapped[UUID]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+    @property
+    def recipient_user_ids(self) -> list[UUID]:
+        return [recipient.user_id for recipient in self.recipient_links]
+
+
+class PushSubscription(Base):
+    __table__ = schema.push_subscriptions
+
+    user_id: Mapped[UUID]
+    endpoint: Mapped[str]
+    p256dh: Mapped[str]
+    auth: Mapped[str]
+    expires_at: Mapped[datetime | None]
+    disabled_at: Mapped[datetime | None]
+    id: Mapped[UUID]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class ReminderRecipient(Base):
+    __table__ = schema.reminder_recipients
+
+    reminder_id: Mapped[UUID]
+    user_id: Mapped[UUID]
+    id: Mapped[UUID]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class NotificationDelivery(Base):
+    __table__ = schema.notification_deliveries
+
+    reminder_id: Mapped[UUID]
+    recipient_user_id: Mapped[UUID]
+    status: Mapped[str]
+    attempt_count: Mapped[int]
+    next_attempt_at: Mapped[datetime | None]
+    claimed_at: Mapped[datetime | None]
+    claimed_by: Mapped[str | None]
+    sent_at: Mapped[datetime | None]
+    last_error_code: Mapped[str | None]
     id: Mapped[UUID]
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]

@@ -1,11 +1,13 @@
 import asyncio
+from datetime import UTC, datetime
+from uuid import uuid4
 
 from httpx import ASGITransport, AsyncClient, Response
 from pytest import MonkeyPatch
 
 from tuck_api.db import create_engine, create_session_factory, get_session_factory, session_scope
 from tuck_api.main import app, get_settings
-from tuck_api.models import Base, User
+from tuck_api.models import Base, NotificationDelivery, User
 from tuck_api.security import hash_password
 
 
@@ -41,16 +43,23 @@ async def login(client: AsyncClient, username: str) -> None:
     assert response.status_code == 200
 
 
-async def create_reminder(client: AsyncClient, title: str = "Appointment") -> Response:
+async def create_reminder(
+    client: AsyncClient,
+    title: str = "Appointment",
+    recipient_user_ids: list[str] | None = None,
+) -> Response:
+    payload: dict[str, object] = {
+        "title": title,
+        "detail": "Bring paperwork",
+        "due_at_utc": "2026-10-01T04:30:00Z",
+        "source_timezone": "Australia/Brisbane",
+        "is_urgent": True,
+    }
+    if recipient_user_ids is not None:
+        payload["recipient_user_ids"] = recipient_user_ids
     return await client.post(
         "/api/v1/reminders",
-        json={
-            "title": title,
-            "detail": "Bring paperwork",
-            "due_at_utc": "2026-10-01T04:30:00Z",
-            "source_timezone": "Australia/Brisbane",
-            "is_urgent": True,
-        },
+        json=payload,
     )
 
 
@@ -109,6 +118,8 @@ def test_owner_can_use_the_one_time_reminder_lifecycle(
     assert reminder["status"] == "pending"
     assert reminder["completed_at"] is None
     assert reminder["cancelled_at"] is None
+    assert len(reminder["recipient_user_ids"]) == 1
+    assert isinstance(reminder["recipient_user_ids"][0], str)
     assert isinstance(reminder["id"], str)
     assert isinstance(reminder["created_at"], str)
     assert isinstance(reminder["updated_at"], str)
@@ -133,6 +144,176 @@ def test_owner_can_use_the_one_time_reminder_lifecycle(
     assert cancelled.json()["status"] == "cancelled"
     assert cancelled.json()["cancelled_at"] is not None
     assert cancelled.json()["completed_at"] is None
+
+
+def test_authenticated_user_can_list_household_users(
+    isolated_database_url: str, monkeypatch: MonkeyPatch
+) -> None:
+    configure_app(monkeypatch, isolated_database_url)
+    asyncio.run(create_accounts(isolated_database_url))
+
+    async def list_household_users() -> Response:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="https://test") as client:
+            await login(client, "niki")
+            return await client.get("/api/v1/household/users")
+
+    try:
+        response = asyncio.run(list_household_users())
+    finally:
+        get_settings.cache_clear()
+        get_session_factory.cache_clear()
+
+    assert response.status_code == 200
+    users = response.json()
+    assert [user["username"] for user in users] == ["ben", "niki"]
+    assert all(set(user) == {"id", "username"} for user in users)
+
+
+def test_assigned_recipient_can_read_but_cannot_mutate_reminder(
+    isolated_database_url: str, monkeypatch: MonkeyPatch
+) -> None:
+    configure_app(monkeypatch, isolated_database_url)
+    asyncio.run(create_accounts(isolated_database_url))
+
+    async def exercise_recipient_access() -> tuple[Response, ...]:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="https://test") as client:
+            await login(client, "niki")
+            users = (await client.get("/api/v1/household/users")).json()
+            ben_id = next(user["id"] for user in users if user["username"] == "ben")
+            created = await create_reminder(client, "For Ben", [ben_id])
+            reminder_url = f"/api/v1/reminders/{created.json()['id']}"
+
+            await login(client, "ben")
+            listed = await client.get("/api/v1/reminders")
+            fetched = await client.get(reminder_url)
+            edited = await client.patch(reminder_url, json={"title": "Not allowed"})
+            rescheduled = await client.post(
+                f"{reminder_url}/reschedule",
+                json={
+                    "due_at_utc": "2026-10-02T05:15:00Z",
+                    "source_timezone": "Australia/Brisbane",
+                },
+            )
+            cancelled = await client.post(f"{reminder_url}/cancel")
+        return created, listed, fetched, edited, rescheduled, cancelled
+
+    try:
+        created, listed, fetched, *mutations = asyncio.run(exercise_recipient_access())
+    finally:
+        get_settings.cache_clear()
+        get_session_factory.cache_clear()
+
+    assert created.status_code == 201
+    assert fetched.status_code == 200
+    assert fetched.json() == created.json()
+    assert listed.json() == [created.json()]
+    assert [(response.status_code, response.json()) for response in mutations] == [
+        (404, {"detail": "Reminder not found"})
+    ] * 3
+
+
+def test_reminder_can_be_assigned_to_both_household_users(
+    isolated_database_url: str, monkeypatch: MonkeyPatch
+) -> None:
+    configure_app(monkeypatch, isolated_database_url)
+    asyncio.run(create_accounts(isolated_database_url))
+
+    async def create_for_both_users() -> tuple[Response, set[str]]:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="https://test") as client:
+            await login(client, "niki")
+            users = (await client.get("/api/v1/household/users")).json()
+            recipient_ids = {user["id"] for user in users}
+            created = await create_reminder(client, "For us", list(recipient_ids))
+            return created, recipient_ids
+
+    try:
+        created, recipient_ids = asyncio.run(create_for_both_users())
+    finally:
+        get_settings.cache_clear()
+        get_session_factory.cache_clear()
+
+    assert created.status_code == 201
+    assert set(created.json()["recipient_user_ids"]) == recipient_ids
+
+
+def test_reminder_response_exposes_creator_and_delivery_history(
+    isolated_database_url: str, monkeypatch: MonkeyPatch
+) -> None:
+    configure_app(monkeypatch, isolated_database_url)
+    asyncio.run(create_accounts(isolated_database_url))
+
+    async def exercise() -> Response:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="https://test") as client:
+            await login(client, "niki")
+            users = (await client.get("/api/v1/household/users")).json()
+            niki_id = next(user["id"] for user in users if user["username"] == "niki")
+            ben_id = next(user["id"] for user in users if user["username"] == "ben")
+            created = await create_reminder(client, "For Ben", [ben_id])
+
+            engine = create_engine(isolated_database_url)
+            factory = create_session_factory(engine)
+            try:
+                async with session_scope(factory) as database:
+                    database.add(
+                        NotificationDelivery(
+                            reminder_id=created.json()["id"],
+                            recipient_user_id=ben_id,
+                            status="retryable",
+                            attempt_count=2,
+                            next_attempt_at=datetime(2026, 10, 1, 4, 35, tzinfo=UTC),
+                            last_error_code="push_unavailable",
+                        )
+                    )
+            finally:
+                await engine.dispose()
+
+            response = await client.get(f"/api/v1/reminders/{created.json()['id']}")
+            assert response.json()["creator_user_id"] == niki_id
+            return response
+
+    try:
+        response = asyncio.run(exercise())
+    finally:
+        get_settings.cache_clear()
+        get_session_factory.cache_clear()
+
+    assert response.status_code == 200
+    delivery = response.json()["deliveries"][0]
+    assert isinstance(delivery.pop("updated_at"), str)
+    assert delivery == {
+        "recipient_user_id": response.json()["recipient_user_ids"][0],
+        "status": "retryable",
+        "attempt_count": 2,
+        "next_attempt_at": "2026-10-01T04:35:00Z",
+        "sent_at": None,
+        "last_error_code": "push_unavailable",
+    }
+
+
+def test_unknown_recipient_rejects_reminder_atomically(
+    isolated_database_url: str, monkeypatch: MonkeyPatch
+) -> None:
+    configure_app(monkeypatch, isolated_database_url)
+    asyncio.run(create_accounts(isolated_database_url))
+
+    async def attempt_unknown_recipient() -> tuple[Response, Response]:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="https://test") as client:
+            await login(client, "niki")
+            rejected = await create_reminder(client, "For stranger", [str(uuid4())])
+            listed = await client.get("/api/v1/reminders")
+            return rejected, listed
+
+    try:
+        rejected, listed = asyncio.run(attempt_unknown_recipient())
+    finally:
+        get_settings.cache_clear()
+        get_session_factory.cache_clear()
+
+    assert (rejected.status_code, rejected.json()) == (
+        422,
+        {"detail": "Unknown reminder recipient"},
+    )
+    assert listed.json() == []
 
 
 def test_reminder_creation_validates_due_time_timezone_and_owned_fields(

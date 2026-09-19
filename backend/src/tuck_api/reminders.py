@@ -4,12 +4,13 @@ from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, HTTPException, status
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import select
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
+from sqlalchemy import exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from tuck_api.auth import CurrentUser, Database
-from tuck_api.models import Reminder, User
+from tuck_api.models import Reminder, ReminderRecipient, User
 
 reminders_router = APIRouter(prefix="/api/v1/reminders", tags=["reminders"])
 
@@ -55,6 +56,14 @@ class ReminderCreate(DueTime):
     detail: str | None = None
     source_timezone: Timezone
     is_urgent: bool = False
+    recipient_user_ids: list[UUID] | None = Field(default=None, min_length=1, max_length=2)
+
+    @field_validator("recipient_user_ids")
+    @classmethod
+    def validate_unique_recipients(cls, value: list[UUID] | None) -> list[UUID] | None:
+        if value is not None and len(set(value)) != len(value):
+            raise ValueError("recipient_user_ids must be unique")
+        return value
 
 
 class ReminderUpdate(BaseModel):
@@ -83,10 +92,23 @@ class ReminderSnooze(DueTime):
     pass
 
 
+class NotificationDeliveryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    recipient_user_id: UUID
+    status: Literal["pending", "claimed", "sent", "retryable", "failed"]
+    attempt_count: int
+    next_attempt_at: datetime | None
+    sent_at: datetime | None
+    last_error_code: str | None
+    updated_at: datetime
+
+
 class ReminderResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    creator_user_id: UUID
     title: str
     detail: str | None
     due_at_utc: datetime
@@ -97,10 +119,28 @@ class ReminderResponse(BaseModel):
     updated_at: datetime
     completed_at: datetime | None
     cancelled_at: datetime | None
+    recipient_user_ids: list[UUID]
+    deliveries: list[NotificationDeliveryResponse]
 
 
 async def create_reminder(database: AsyncSession, actor: User, payload: ReminderCreate) -> Reminder:
-    reminder = Reminder(creator_user_id=actor.id, **payload.model_dump())
+    recipient_user_ids = payload.recipient_user_ids or [actor.id]
+    existing_recipient_ids = set(
+        await database.scalars(select(User.id).where(User.id.in_(recipient_user_ids)))
+    )
+    if existing_recipient_ids != set(recipient_user_ids):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Unknown reminder recipient",
+        )
+
+    reminder = Reminder(
+        creator_user_id=actor.id,
+        **payload.model_dump(exclude={"recipient_user_ids"}),
+    )
+    reminder.recipient_links = [
+        ReminderRecipient(user_id=recipient_user_id) for recipient_user_id in recipient_user_ids
+    ]
     database.add(reminder)
     await database.flush()
     await database.refresh(reminder)
@@ -110,7 +150,7 @@ async def create_reminder(database: AsyncSession, actor: User, payload: Reminder
 async def list_reminders(database: AsyncSession, actor: User) -> list[Reminder]:
     result = await database.scalars(
         select(Reminder)
-        .where(Reminder.creator_user_id == actor.id)
+        .where(reminder_is_readable_by(actor))
         .order_by(Reminder.due_at_utc, Reminder.id)
     )
     return list(result)
@@ -120,11 +160,23 @@ def reminder_not_found() -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reminder not found")
 
 
+def reminder_is_readable_by(actor: User) -> ColumnElement[bool]:
+    return or_(
+        Reminder.creator_user_id == actor.id,
+        exists(
+            select(ReminderRecipient.id).where(
+                ReminderRecipient.reminder_id == Reminder.id,
+                ReminderRecipient.user_id == actor.id,
+            )
+        ),
+    )
+
+
 async def get_reminder(database: AsyncSession, actor: User, reminder_id: UUID) -> Reminder:
     reminder = await database.scalar(
         select(Reminder).where(
             Reminder.id == reminder_id,
-            Reminder.creator_user_id == actor.id,
+            reminder_is_readable_by(actor),
         )
     )
     if reminder is None:
