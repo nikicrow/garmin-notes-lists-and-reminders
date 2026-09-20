@@ -25,6 +25,115 @@ afterEach(() => {
 })
 
 describe('App', () => {
+  it('routes natural-language text through the capture workflow', async () => {
+    window.history.replaceState(null, '', '/capture')
+    const created = {
+      id: '33333333-3333-3333-3333-333333333333',
+      source: 'pwa_text',
+      source_request_id: '44444444-4444-4444-4444-444444444444',
+      raw_text: 'Note: book the dentist',
+      occurred_at: '2026-09-20T00:00:00Z',
+      reference_timezone: 'Australia/Sydney',
+      status: 'completed',
+      receipt: 'Saved note: book the dentist.',
+      proposed_plan: {
+        schema_version: '1',
+        actions: [{ type: 'create_note', body: 'book the dentist' }],
+        ambiguities: [],
+      },
+      validation_issues: [],
+      resulting_resources: [],
+      created_at: '2026-09-20T00:00:01Z',
+      updated_at: '2026-09-20T00:00:01Z',
+    }
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ username: 'niki' }))
+      .mockResolvedValueOnce(jsonResponse([]))
+      .mockResolvedValueOnce(jsonResponse(created, 201))
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<App />)
+
+    fireEvent.change(await screen.findByLabelText('What do you need?'), {
+      target: { value: created.raw_text },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Tuck it away' }))
+
+    expect(await screen.findByText(created.receipt)).toBeInTheDocument()
+    const submitted = JSON.parse(
+      (fetchMock.mock.calls[2][1] as RequestInit).body as string,
+    ) as Record<string, unknown>
+    expect(submitted).toMatchObject({
+      raw_text: created.raw_text,
+    })
+    expect(typeof submitted.occurred_at).toBe('string')
+    expect(typeof submitted.client_timezone).toBe('string')
+    expect(submitted.source_request_id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    )
+  })
+
+  it('lets the user correct an ambiguous capture as a note', async () => {
+    window.history.replaceState(null, '', '/capture')
+    const capture = {
+      id: '33333333-3333-3333-3333-333333333333',
+      source: 'pwa_text',
+      source_request_id: '44444444-4444-4444-4444-444444444444',
+      raw_text: 'Maybe deal with that thing later',
+      occurred_at: '2026-09-20T00:00:00Z',
+      reference_timezone: 'Australia/Sydney',
+      status: 'needs_review',
+      receipt:
+        'Needs review: Tuck could not safely identify a supported creation command.',
+      proposed_plan: null,
+      validation_issues: [
+        {
+          code: 'unsupported_or_ambiguous',
+          message:
+            'Tuck could not safely identify a supported creation command.',
+        },
+      ],
+      resulting_resources: [],
+      created_at: '2026-09-20T00:00:01Z',
+      updated_at: '2026-09-20T00:00:01Z',
+    }
+    const corrected = {
+      ...capture,
+      status: 'completed',
+      receipt: 'Saved note: Deal with that thing.',
+      validation_issues: [],
+    }
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ username: 'niki' }))
+      .mockResolvedValueOnce(jsonResponse([capture]))
+      .mockResolvedValueOnce(jsonResponse(corrected))
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<App />)
+
+    fireEvent.change(
+      await screen.findByLabelText('Correct it and save as a note'),
+      { target: { value: 'Deal with that thing' } },
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Save corrected note' }))
+
+    expect(await screen.findByText(corrected.receipt)).toBeInTheDocument()
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      `/api/v1/captures/${capture.id}/confirm`,
+      expect.objectContaining({
+        body: JSON.stringify({
+          schema_version: '1',
+          actions: [{ type: 'create_note', body: 'Deal with that thing' }],
+          ambiguities: [],
+        }),
+        method: 'POST',
+      }),
+    )
+  })
+
   it('enables notifications only after the user opts in', async () => {
     window.history.replaceState(null, '', '/reminders')
     const requestPermission = vi.fn().mockResolvedValue('granted')

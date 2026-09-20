@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import DateTime, Uuid, func
@@ -162,6 +163,65 @@ class NotificationDelivery(Base):
     claimed_by: Mapped[str | None]
     sent_at: Mapped[datetime | None]
     last_error_code: Mapped[str | None]
+    id: Mapped[UUID]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class Capture(Base):
+    __table__ = schema.captures
+
+    user_id: Mapped[UUID]
+    source: Mapped[str]
+    source_request_id: Mapped[str]
+    raw_text: Mapped[str]
+    occurred_at: Mapped[datetime]
+    reference_timezone: Mapped[str]
+    status: Mapped[str]
+    active_execution_id: Mapped[UUID | None]
+    resulting_resource_summary: Mapped[list[dict[str, Any]] | None]
+    safe_error_code: Mapped[str | None]
+    receipt: Mapped[str | None]
+    id: Mapped[UUID]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class AgentExecution(Base):
+    __table__ = schema.agent_executions
+
+    capture_id: Mapped[UUID]
+    attempt_number: Mapped[int]
+    graph_version: Mapped[str]
+    command_schema_version: Mapped[str]
+    prompt_version: Mapped[str]
+    model_provider: Mapped[str]
+    model_name: Mapped[str]
+    status: Mapped[str]
+    structured_plan_json: Mapped[dict[str, Any] | None]
+    validation_issues_json: Mapped[list[dict[str, Any]]]
+    policy_decision_json: Mapped[dict[str, Any] | None]
+    started_at: Mapped[datetime]
+    completed_at: Mapped[datetime | None]
+    latency_ms: Mapped[int | None]
+    safe_error_code: Mapped[str | None]
+    id: Mapped[UUID]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class AgentActionExecution(Base):
+    __table__ = schema.agent_action_executions
+
+    agent_execution_id: Mapped[UUID]
+    action_index: Mapped[int]
+    action_type: Mapped[str]
+    idempotency_key: Mapped[str]
+    validated_command_json: Mapped[dict[str, Any]]
+    status: Mapped[str]
+    result_entity_type: Mapped[str | None]
+    result_entity_id: Mapped[UUID | None]
+    result_summary_json: Mapped[dict[str, Any] | None]
     id: Mapped[UUID]
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]

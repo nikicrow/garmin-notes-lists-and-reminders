@@ -148,7 +148,7 @@ nav {
   z-index: 1;
   bottom: 0;
   grid-area: nav;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   border-top: 1px solid #d9d2c3;
   background: #fffdf8;
 }
@@ -189,11 +189,88 @@ nav a[aria-current='page'] {
   text-align: center;
 }
 
+.captures-page,
 .notes-page,
 .lists-page,
 .reminders-page {
   display: grid;
   gap: 1.5rem;
+}
+
+.capture-composer,
+.review-panel {
+  display: grid;
+  gap: 0.75rem;
+  padding: clamp(1rem, 4vw, 1.5rem);
+  border: 1px solid #d9d2c3;
+  border-radius: 1rem;
+  background: #fffdf8;
+}
+
+.capture-composer label,
+.review-panel label {
+  font-weight: 700;
+}
+
+.capture-composer textarea,
+.review-panel textarea {
+  width: 100%;
+  padding: 0.8rem;
+  resize: vertical;
+  border: 1px solid #8a988f;
+  border-radius: 0.65rem;
+  color: inherit;
+  background: #fff;
+}
+
+.capture-list {
+  display: grid;
+  gap: 1rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.capture-list > li {
+  padding: clamp(1rem, 4vw, 1.5rem);
+  border: 1px solid #d9d2c3;
+  border-radius: 1rem;
+  background: #fffdf8;
+}
+
+.capture-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  color: #51635b;
+  font-size: 0.9rem;
+}
+
+.capture-heading .status-badge {
+  margin: 0 !important;
+}
+
+.capture-text {
+  margin: 1rem 0 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.capture-receipt {
+  margin: 0.75rem 0 0;
+  color: #245c46;
+  font-weight: 700;
+}
+
+.review-panel {
+  margin-top: 1rem;
+  background: #fff2df;
+}
+
+.review-panel p {
+  margin: 0;
+  color: #5f3a24;
 }
 
 .page-heading .eyebrow {

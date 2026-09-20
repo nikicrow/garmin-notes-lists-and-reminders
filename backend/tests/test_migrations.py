@@ -46,7 +46,7 @@ def test_migrations_upgrade_clean_postgresql_database(
 
     revision, tables, schema_differences = asyncio.run(read_migration_state())
 
-    assert revision == "0008_delivery_claiming"
+    assert revision == "0009_command_workflow"
     assert {
         "users",
         "user_sessions",
@@ -58,6 +58,9 @@ def test_migrations_upgrade_clean_postgresql_database(
         "push_subscriptions",
         "reminder_recipients",
         "notification_deliveries",
+        "captures",
+        "agent_executions",
+        "agent_action_executions",
     } <= tables
     assert schema_differences == []
 

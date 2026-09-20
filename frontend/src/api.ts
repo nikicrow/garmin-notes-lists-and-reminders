@@ -69,6 +69,32 @@ export interface RegisteredPushSubscription {
   expirationTime: string | null
 }
 
+export interface Capture {
+  id: string
+  source: string
+  source_request_id: string
+  raw_text: string
+  occurred_at: string
+  reference_timezone: string
+  status:
+    | 'received'
+    | 'interpreting'
+    | 'needs_review'
+    | 'executing'
+    | 'completed'
+    | 'failed'
+  receipt: string | null
+  proposed_plan: Record<string, unknown> | null
+  validation_issues: Array<{
+    code: string
+    message: string
+    action_index?: number | null
+  }>
+  resulting_resources: Array<Record<string, unknown>>
+  created_at: string
+  updated_at: string
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -122,6 +148,33 @@ export const authApi = {
 
 export const householdApi = {
   users: () => request<HouseholdUser[]>('/api/v1/household/users'),
+}
+
+export const capturesApi = {
+  list: () => request<Capture[]>('/api/v1/captures'),
+  create: (rawText: string, timezone: string, sourceRequestId: string) =>
+    request<Capture>('/api/v1/captures/text', {
+      method: 'POST',
+      body: JSON.stringify({
+        raw_text: rawText,
+        source_request_id: sourceRequestId,
+        occurred_at: new Date().toISOString(),
+        client_timezone: timezone,
+      }),
+    }),
+  confirmAsNote: (captureId: string, body: string) =>
+    request<Capture>(`/api/v1/captures/${captureId}/confirm`, {
+      method: 'POST',
+      body: JSON.stringify({
+        schema_version: '1',
+        actions: [{ type: 'create_note', body }],
+        ambiguities: [],
+      }),
+    }),
+  reject: (captureId: string) =>
+    request<Capture>(`/api/v1/captures/${captureId}/reject`, {
+      method: 'POST',
+    }),
 }
 
 export const pushSubscriptionsApi = {
