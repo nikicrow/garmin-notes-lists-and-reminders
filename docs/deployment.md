@@ -106,7 +106,7 @@ uv run --project /path/to/tuck/repo/backend vapid \
   --applicationServerKey --private-key /protected/path/private_key.pem
 ```
 
-Store the reported browser-facing value as `TUCK_VAPID_PUBLIC_KEY`, the private PEM as the single-quoted multiline `TUCK_VAPID_PRIVATE_KEY` value, and an operator contact URI as `TUCK_VAPID_SUBJECT`. Never generate or store the PEM files inside the repository.
+Store the reported browser-facing value as `TUCK_VAPID_PUBLIC_KEY`. Convert the matching private key to URL-safe base64-encoded DER for `TUCK_VAPID_PRIVATE_KEY`, as `scripts/create-production-env.sh` does, and store an operator contact URI as `TUCK_VAPID_SUBJECT`. A multiline PEM value is not accepted by `pywebpush` when passed directly from the environment. Never generate or store the PEM files inside the repository.
 
 Rotate VAPID keys as one change: generate a new pair, update all three settings in the protected production environment, rebuild/recreate `api` and `reminder-worker`, and confirm both API readiness and worker health. Browsers must disable and re-enable notifications after rotation so subscriptions are recreated with the new public key. Keep the prior private key only until that resubscription window ends, then destroy it according to the secret-retention policy.
 

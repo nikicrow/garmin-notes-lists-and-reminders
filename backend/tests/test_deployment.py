@@ -1,8 +1,15 @@
 """Tests for deployment configuration."""
 
+import base64
 import os
+import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
+from cryptography.hazmat.primitives import serialization
+from dotenv import dotenv_values
+from py_vapid import Vapid  # type: ignore[import-untyped]
 
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _PRODUCTION_CONFIG_VALIDATOR = os.path.join(_REPO_ROOT, "scripts", "validate-production-config.sh")
@@ -181,8 +188,25 @@ def test_production_environment_bootstrap_creates_valid_private_file(tmp_path: P
     assert "TUCK_ENVIRONMENT=production" in content
     assert "@postgres:5432/tuck" in content
     assert "TUCK_VAPID_PUBLIC_KEY=" in content
-    assert "TUCK_VAPID_PRIVATE_KEY='-----BEGIN EC PRIVATE KEY-----" in content
     assert "TUCK_VAPID_SUBJECT=mailto:operator@example.invalid" in content
+
+    values = dotenv_values(env_file)
+    private_key = values["TUCK_VAPID_PRIVATE_KEY"]
+    public_key = values["TUCK_VAPID_PUBLIC_KEY"]
+    assert private_key is not None
+    assert public_key is not None
+    vapid = Vapid.from_string(private_key)
+    derived_public_key = (
+        base64.urlsafe_b64encode(
+            vapid.public_key.public_bytes(
+                serialization.Encoding.X962,
+                serialization.PublicFormat.UncompressedPoint,
+            )
+        )
+        .rstrip(b"=")
+        .decode()
+    )
+    assert derived_public_key == public_key
 
     validation = subprocess.run(
         [_PRODUCTION_CONFIG_VALIDATOR, env_file],
@@ -210,6 +234,123 @@ def test_production_environment_bootstrap_requires_vapid_subject(tmp_path: Path)
     assert result.returncode != 0
     assert not env_file.exists()
     assert "TUCK_VAPID_SUBJECT must start with mailto: or https://" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "https://example.invalid:8445",
+        "https://example.invalid:8445/path",
+        "https://example.invalid:8445/",
+        "https://example.invalid:8445?contact=operator",
+        "https://example.invalid:8445#operator",
+        "https://[2001:db8::1]:8445",
+        "https://[2001:db8::1]:8445/path",
+    ],
+)
+def test_production_environment_bootstrap_rejects_https_subject_with_port(
+    tmp_path: Path, subject: str
+) -> None:
+    env_file = tmp_path / "tuck.env"
+    bootstrap = Path(_REPO_ROOT, "scripts", "create-production-env.sh")
+
+    result = subprocess.run(
+        [bootstrap, env_file],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        env={**os.environ, "TUCK_VAPID_SUBJECT": subject},
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode != 0
+    assert not env_file.exists()
+    assert "HTTPS VAPID subject must not include a port" in result.stderr
+
+
+def test_production_environment_bootstrap_accepts_py_vapid_compatible_ipv6_subject(
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / "tuck.env"
+    bootstrap = Path(_REPO_ROOT, "scripts", "create-production-env.sh")
+
+    result = subprocess.run(
+        [bootstrap, env_file],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        env={**os.environ, "TUCK_VAPID_SUBJECT": "https://2001:db8::1"},
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert dotenv_values(env_file)["TUCK_VAPID_SUBJECT"] == "https://2001:db8::1"
+
+
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "https://example.invalid/path",
+        "https://example.invalid?contact=operator",
+        "https://example.invalid#operator",
+        "https://[2001:db8::1]",
+    ],
+)
+def test_production_environment_bootstrap_rejects_py_vapid_incompatible_https_subject(
+    tmp_path: Path, subject: str
+) -> None:
+    env_file = tmp_path / "tuck.env"
+    bootstrap = Path(_REPO_ROOT, "scripts", "create-production-env.sh")
+
+    result = subprocess.run(
+        [bootstrap, env_file],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        env={**os.environ, "TUCK_VAPID_SUBJECT": subject},
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode != 0
+    assert not env_file.exists()
+    assert "HTTPS VAPID subject is not compatible with py_vapid" in result.stderr
+
+
+def test_production_environment_bootstrap_does_not_install_on_private_key_conversion_failure(
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / "tuck.env"
+    bootstrap = Path(_REPO_ROOT, "scripts", "create-production-env.sh")
+    openssl = shutil.which("openssl")
+    assert openssl is not None
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_openssl = fake_bin / "openssl"
+    fake_openssl.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "${1:-}" == ec && " $* " == *" -outform DER "* '
+        '&& " $* " != *" -pubout "* ]]; then\n'
+        "  exit 42\n"
+        "fi\n"
+        f'exec "{openssl}" "$@"\n'
+    )
+    fake_openssl.chmod(0o755)
+
+    result = subprocess.run(
+        [bootstrap, env_file],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+            "TUCK_VAPID_SUBJECT": "mailto:operator@example.invalid",
+        },
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode != 0
+    assert not env_file.exists()
 
 
 def test_production_environment_bootstrap_refuses_to_overwrite(tmp_path: Path) -> None:
