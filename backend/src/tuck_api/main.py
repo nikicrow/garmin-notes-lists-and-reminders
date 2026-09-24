@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from tuck_api.auth import AuthenticationMiddleware, auth_router
+from tuck_api.captures import captures_router
 from tuck_api.household import household_router
 from tuck_api.lists import lists_router
 from tuck_api.notes import notes_router
@@ -20,6 +21,7 @@ app.include_router(notes_router)
 app.include_router(lists_router)
 app.include_router(reminders_router)
 app.include_router(push_subscriptions_router)
+app.include_router(captures_router)
 
 
 @app.exception_handler(RequestValidationError)

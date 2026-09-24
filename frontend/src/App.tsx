@@ -3,12 +3,14 @@ import { useEffect, useRef, useState } from 'react'
 import {
   ApiError,
   authApi,
+  capturesApi,
   householdApi,
   listsApi,
   notesApi,
   pushSubscriptionsApi,
   remindersApi,
   type HouseholdUser,
+  type Capture,
   type ListItem,
   type Note,
   type Reminder,
@@ -1411,7 +1413,179 @@ function RemindersPage({ currentUsername }: { currentUsername: string }) {
   )
 }
 
+function CapturePage() {
+  const [captures, setCaptures] = useState<Capture[] | null>(null)
+  const [rawText, setRawText] = useState('')
+  const [corrections, setCorrections] = useState<Record<string, string>>({})
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let active = true
+    void capturesApi
+      .list()
+      .then((loaded) => {
+        if (active) setCaptures(loaded)
+      })
+      .catch((caught: unknown) => {
+        if (active) {
+          setCaptures([])
+          setError(messageFor(caught))
+        }
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  function replaceCapture(updated: Capture) {
+    setCaptures((current) => {
+      const withoutUpdated = (current ?? []).filter(
+        (capture) => capture.id !== updated.id,
+      )
+      return [updated, ...withoutUpdated]
+    })
+  }
+
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setSubmitting(true)
+    setError(null)
+    try {
+      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+      replaceCapture(
+        await capturesApi.create(rawText, timezone, crypto.randomUUID()),
+      )
+      setRawText('')
+    } catch (caught) {
+      setError(messageFor(caught))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function confirmAsNote(capture: Capture) {
+    setSubmitting(true)
+    setError(null)
+    try {
+      replaceCapture(
+        await capturesApi.confirmAsNote(
+          capture.id,
+          corrections[capture.id] ?? capture.raw_text,
+        ),
+      )
+    } catch (caught) {
+      setError(messageFor(caught))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function reject(capture: Capture) {
+    setSubmitting(true)
+    setError(null)
+    try {
+      replaceCapture(await capturesApi.reject(capture.id))
+    } catch (caught) {
+      setError(messageFor(caught))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <section className="captures-page" aria-labelledby="captures-heading">
+      <div className="page-heading">
+        <p className="eyebrow">One place to start</p>
+        <h1 id="captures-heading">Capture</h1>
+        <p>Type naturally. Tuck will act only when the request is clear.</p>
+      </div>
+      <form
+        className="capture-composer"
+        onSubmit={(event) => void submit(event)}
+      >
+        <label htmlFor="natural-language-capture">What do you need?</label>
+        <textarea
+          id="natural-language-capture"
+          onChange={(event) => setRawText(event.target.value)}
+          placeholder="Add milk and bananas to the shopping list"
+          required
+          rows={3}
+          value={rawText}
+        />
+        <button disabled={submitting} type="submit">
+          {submitting ? 'Working…' : 'Tuck it away'}
+        </button>
+      </form>
+      {error === null ? null : <p role="alert">{error}</p>}
+      {captures === null ? <p role="status">Loading captures…</p> : null}
+      {captures?.length === 0 ? <p role="status">No captures yet.</p> : null}
+      {captures === null || captures.length === 0 ? null : (
+        <ul className="capture-list" aria-label="Capture inbox">
+          {captures.map((capture) => (
+            <li key={capture.id}>
+              <div className="capture-heading">
+                <span className={`status-badge ${capture.status}`}>
+                  {capture.status.replace('_', ' ')}
+                </span>
+                <time dateTime={capture.created_at}>
+                  {new Date(capture.created_at).toLocaleString()}
+                </time>
+              </div>
+              <p className="capture-text">{capture.raw_text}</p>
+              {capture.receipt === null ? null : (
+                <p className="capture-receipt">{capture.receipt}</p>
+              )}
+              {capture.status === 'needs_review' ? (
+                <div className="review-panel">
+                  {capture.validation_issues.map((issue) => (
+                    <p key={`${issue.code}-${issue.action_index ?? 'capture'}`}>
+                      {issue.message}
+                    </p>
+                  ))}
+                  <label htmlFor={`correction-${capture.id}`}>
+                    Correct it and save as a note
+                  </label>
+                  <textarea
+                    id={`correction-${capture.id}`}
+                    onChange={(event) =>
+                      setCorrections((current) => ({
+                        ...current,
+                        [capture.id]: event.target.value,
+                      }))
+                    }
+                    rows={3}
+                    value={corrections[capture.id] ?? capture.raw_text}
+                  />
+                  <div className="compact-actions">
+                    <button
+                      disabled={submitting}
+                      onClick={() => void confirmAsNote(capture)}
+                      type="button"
+                    >
+                      Save corrected note
+                    </button>
+                    <button
+                      className="danger-button"
+                      disabled={submitting}
+                      onClick={() => void reject(capture)}
+                      type="button"
+                    >
+                      Reject
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
 const pages = {
+  '/capture': { title: 'Capture', empty: 'No captures yet.' },
   '/notes': { title: 'Notes', empty: 'No notes yet.' },
   '/lists': { title: 'Lists', empty: 'No lists yet.' },
   '/reminders': { title: 'Reminders', empty: 'No upcoming reminders.' },
@@ -1477,8 +1651,8 @@ function AuthenticatedShell({
       <header className="app-header">
         <a
           className="brand"
-          href="/notes"
-          onClick={(event) => navigate(event, '/notes')}
+          href="/capture"
+          onClick={(event) => navigate(event, '/capture')}
         >
           Tuck
         </a>
@@ -1507,7 +1681,9 @@ function AuthenticatedShell({
       </nav>
       <main className="page-content">
         {error === null ? null : <p role="alert">{error}</p>}
-        {path === '/notes' ? (
+        {path === '/capture' ? (
+          <CapturePage />
+        ) : path === '/notes' ? (
           <NotesPage />
         ) : path === '/lists' ? (
           <ListsPage />

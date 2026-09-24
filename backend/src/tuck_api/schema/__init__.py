@@ -1,15 +1,11 @@
-"""Current application schema assembled from immutable revision snapshots.
+"""Current application schema assembled from immutable revision snapshots."""
 
-The Phase 2 snapshot is copied into separate ``Table`` objects so ORM mappings
-can evolve without retroactively changing Alembic revisions.
-"""
+from sqlalchemy import MetaData
 
-from sqlalchemy import CheckConstraint, Column, MetaData, String
+from tuck_api.schema import phase3
 
-from tuck_api.schema import phase2
-
-metadata = MetaData(naming_convention=phase2.metadata.naming_convention)
-for snapshot_table in phase2.application_tables:
+metadata = MetaData(naming_convention=phase3.metadata.naming_convention)
+for snapshot_table in phase3.application_tables:
     snapshot_table.to_metadata(metadata)
 
 users = metadata.tables["users"]
@@ -22,16 +18,9 @@ reminders = metadata.tables["reminders"]
 push_subscriptions = metadata.tables["push_subscriptions"]
 reminder_recipients = metadata.tables["reminder_recipients"]
 notification_deliveries = metadata.tables["notification_deliveries"]
-notification_deliveries.append_column(Column("claimed_by", String(100), nullable=True))
-for constraint in tuple(notification_deliveries.constraints):
-    if constraint.name == "ck_notification_deliveries_status_valid":
-        notification_deliveries.constraints.remove(constraint)
-notification_deliveries.append_constraint(
-    CheckConstraint(
-        "status IN ('pending', 'claimed', 'sent', 'retryable', 'failed')",
-        name="status_valid",
-    )
-)
+captures = metadata.tables["captures"]
+agent_executions = metadata.tables["agent_executions"]
+agent_action_executions = metadata.tables["agent_action_executions"]
 
 application_tables = (
     users,
@@ -44,4 +33,7 @@ application_tables = (
     push_subscriptions,
     reminder_recipients,
     notification_deliveries,
+    captures,
+    agent_executions,
+    agent_action_executions,
 )
