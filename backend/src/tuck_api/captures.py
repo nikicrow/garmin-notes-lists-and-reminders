@@ -22,6 +22,7 @@ from tuck_api.command_schemas import (
     CreateNote,
     CreateReminder,
 )
+from tuck_api.db import get_session_factory, session_scope
 from tuck_api.lists import (
     add_list_item,
     create_list,
@@ -433,6 +434,38 @@ async def owned_capture(database: AsyncSession, actor: User, capture_id: UUID) -
     return capture
 
 
+async def persist_text_capture(payload: TextCaptureCreate, user_id: UUID) -> tuple[UUID, bool]:
+    """Commit raw intake independently before running interpretation."""
+    async with session_scope(get_session_factory()) as intake_database:
+        created_id = await intake_database.scalar(
+            insert(Capture)
+            .values(
+                user_id=user_id,
+                source="pwa_text",
+                source_request_id=payload.source_request_id,
+                raw_text=payload.raw_text.strip(),
+                occurred_at=payload.occurred_at,
+                reference_timezone=payload.client_timezone,
+                status="received",
+            )
+            .on_conflict_do_nothing(index_elements=["source", "user_id", "source_request_id"])
+            .returning(Capture.id)
+        )
+        if created_id is not None:
+            return created_id, True
+
+        existing_id = await intake_database.scalar(
+            select(Capture.id).where(
+                Capture.source == "pwa_text",
+                Capture.user_id == user_id,
+                Capture.source_request_id == payload.source_request_id,
+            )
+        )
+        if existing_id is None:
+            raise RuntimeError("capture idempotency conflict did not return an existing row")
+        return existing_id, False
+
+
 @captures_router.post("/text", response_model=CaptureResponse, status_code=status.HTTP_201_CREATED)
 async def create_text_capture(
     payload: TextCaptureCreate,
@@ -440,39 +473,14 @@ async def create_text_capture(
     database: Database,
     user: CurrentUser,
 ) -> CaptureResponse:
-    created_id = await database.scalar(
-        insert(Capture)
-        .values(
-            user_id=user.id,
-            source="pwa_text",
-            source_request_id=payload.source_request_id,
-            raw_text=payload.raw_text.strip(),
-            occurred_at=payload.occurred_at,
-            reference_timezone=payload.client_timezone,
-            status="received",
-        )
-        .on_conflict_do_nothing(index_elements=["source", "user_id", "source_request_id"])
-        .returning(Capture.id)
-    )
-    if created_id is None:
-        existing = await database.scalar(
-            select(Capture).where(
-                Capture.source == "pwa_text",
-                Capture.user_id == user.id,
-                Capture.source_request_id == payload.source_request_id,
-            )
-        )
-        if existing is None:
-            raise RuntimeError("capture idempotency conflict did not return an existing row")
-        response.status_code = status.HTTP_200_OK
-        return await to_response(database, existing)
-
-    capture = await database.get(Capture, created_id)
+    capture_id, created = await persist_text_capture(payload, user.id)
+    capture = await database.get(Capture, capture_id)
     if capture is None:
-        raise RuntimeError("new capture could not be loaded")
-    # The raw capture must survive interpreter/provider failure. Agent and domain
-    # work starts only after this short intake transaction is durable.
-    await database.commit()
+        raise RuntimeError("persisted capture could not be loaded")
+    if not created:
+        response.status_code = status.HTTP_200_OK
+        return await to_response(database, capture)
+
     await workflow.run(database, user, capture)
     return await to_response(database, capture)
 
