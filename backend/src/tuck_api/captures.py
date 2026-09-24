@@ -407,6 +407,9 @@ async def _execution_for(database: AsyncSession, capture: Capture) -> AgentExecu
 
 
 async def to_response(database: AsyncSession, capture: Capture) -> CaptureResponse:
+    # Workflow updates expire server-managed columns such as ``updated_at``.
+    # Refresh explicitly so response serialization never triggers implicit async I/O.
+    await database.refresh(capture)
     execution = await _execution_for(database, capture)
     return CaptureResponse(
         id=capture.id,
