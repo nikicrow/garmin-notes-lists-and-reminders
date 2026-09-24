@@ -12,6 +12,19 @@ if [[ "$vapid_subject" != mailto:* && "$vapid_subject" != https://* ]]; then
   echo "TUCK_VAPID_SUBJECT must start with mailto: or https://" >&2
   exit 1
 fi
+if [[ "$vapid_subject" == https://* ]]; then
+  https_subject_authority="${vapid_subject#https://}"
+  https_subject_authority="${https_subject_authority%%[/?#]*}"
+  readonly https_subject_authority
+  if [[ "$https_subject_authority" =~ ^[^:]+:[0-9]+$ || "$https_subject_authority" =~ ^\[[^]]+\]:[0-9]+$ ]]; then
+    echo "HTTPS VAPID subject must not include a port" >&2
+    exit 1
+  fi
+  if [[ ! "$vapid_subject" =~ ^https://(localhost|[[:alnum:]_-]+\.[[:alnum:]_.-]+|([[:xdigit:]]{1,4}:+)+[[:xdigit:]]{0,4})$ ]]; then
+    echo "HTTPS VAPID subject is not compatible with py_vapid" >&2
+    exit 1
+  fi
+fi
 if ! command -v openssl >/dev/null 2>&1; then
   echo "openssl is required to generate the database password and VAPID keys" >&2
   exit 1
@@ -48,7 +61,20 @@ readonly vapid_public_key="$(
     tr '+/' '-_' |
     tr -d '='
 )"
-readonly vapid_private_key="$(<"$temporary_private_key")"
+if ! vapid_private_key="$(
+  openssl ec -in "$temporary_private_key" -outform DER 2>/dev/null |
+    openssl base64 -A |
+    tr '+/' '-_' |
+    tr -d '='
+)"; then
+  echo "Failed to convert generated VAPID private key" >&2
+  exit 1
+fi
+if [[ -z "$vapid_private_key" ]]; then
+  echo "Generated VAPID private key is empty" >&2
+  exit 1
+fi
+readonly vapid_private_key
 
 {
   printf 'POSTGRES_USER=tuck\n'
@@ -58,7 +84,7 @@ readonly vapid_private_key="$(<"$temporary_private_key")"
   printf 'TUCK_COMPOSE_DATABASE_URL=postgresql+asyncpg://tuck:%s@postgres:5432/tuck\n' "$password"
   printf 'TUCK_ENVIRONMENT=production\n'
   printf 'TUCK_VAPID_PUBLIC_KEY=%s\n' "$vapid_public_key"
-  printf "TUCK_VAPID_PRIVATE_KEY='%s'\n" "$vapid_private_key"
+  printf 'TUCK_VAPID_PRIVATE_KEY=%s\n' "$vapid_private_key"
   printf 'TUCK_VAPID_SUBJECT=%s\n' "$vapid_subject"
   printf 'API_PORT=%s\n' "${TUCK_API_PORT:-8180}"
   printf 'WEB_PORT=%s\n' "${TUCK_WEB_PORT:-8181}"
